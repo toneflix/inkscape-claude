@@ -7,8 +7,8 @@ Three ways for Claude to work with Inkscape 1.x:
    any other Inkscape action, and export to PNG/PDF/EPS.
 2. **Ask Claude…**: an Inkscape extension (`Extensions > Claude > Ask Claude…`). Type a prompt, and
    Claude edits the open drawing, only the selected objects, or adds new artwork. Ctrl+Z undoes it.
-3. **Chat panel**: a chat page next to Inkscape for a longer conversation about one drawing; on Linux the
-   Inkscape window updates after every answer.
+3. **Chat panel**: a chat page next to Inkscape for a longer conversation about one drawing; the Inkscape
+   window updates after every answer.
 
 ![Demo badge drawn through the MCP server](examples/demo-badge.png)
 
@@ -69,10 +69,9 @@ and export a PDF."*
 | `undo_last_change` | Every edit snapshots the file first; this steps back one snapshot |
 | `list_documents`, `inkscape_info`, `open_in_inkscape` | Housekeeping; the last opens the file in the Inkscape app |
 
-### Live control (Linux)
+### Live control
 
-On Linux, Inkscape publishes its actions on the session D-Bus, so Claude can work on the window you have
-open and you see each change as it happens:
+Claude can work on an open Inkscape window, so you see each change as it happens:
 
 | Tool | What it does |
 | --- | --- |
@@ -84,8 +83,15 @@ open and you see each change as it happens:
 | `live_save` / `live_reload` | File > Save and File > Revert, so file edits made with the other tools show up in the window |
 
 The usual loop for bigger edits is `live_save`, edit the file with the normal tools, then `live_reload`.
-Live control needs the `gdbus` command (part of GLib, installed on most desktops). On macOS and Windows these
-tools report that live control is unavailable; edit the file and use File > Revert instead.
+
+How Claude reaches the window depends on the system:
+
+- **Linux**: Inkscape publishes its actions on the session D-Bus, so Claude can follow any window, including
+  one you opened yourself. This needs the `gdbus` command (part of GLib, installed on most desktops).
+- **macOS and Windows** (or `INKSCAPE_MCP_LIVE=shell` anywhere): there is no D-Bus, so Claude opens the
+  document itself with `live_open`. That starts Inkscape with its interactive shell attached, which Claude
+  uses to run actions, save and reload. Work in that window. It is saved and closed when the MCP server
+  stops. Reloading needs Inkscape 1.3 or later; on older versions use File > Revert.
 
 ### Settings (environment variables)
 
@@ -95,6 +101,7 @@ tools report that live control is unavailable; edit the file and use File > Reve
 | `INKSCAPE_MCP_ALLOW_ANY_PATH` | off | Set to `1` to allow any path on disk. |
 | `INKSCAPE_BIN` | auto-detect | Path to the Inkscape executable. |
 | `INKSCAPE_TIMEOUT` | `120` | Seconds before an Inkscape run is stopped. |
+| `INKSCAPE_MCP_LIVE` | auto | `dbus` or `shell` to choose how live control reaches Inkscape (default: D-Bus on Linux, shell elsewhere). |
 
 ## 2. "Ask Claude…" extension
 
@@ -148,8 +155,8 @@ Inkscape's bundled Python on Windows and macOS usually does not have extra packa
   one-shot. The chat panel avoids this: it runs outside Inkscape and keeps the conversation going.
 - *Selection only* replaces the selected objects in place. If they sit in different groups or layers,
   the result goes where the first one was.
-- Live control of an open window works on Linux only. On macOS and Windows the MCP server works on files;
-  use `open_in_inkscape`, or File > Revert in Inkscape, to see changes made on disk.
+- On macOS and Windows, Claude can only follow an Inkscape window that it opened itself (`live_open`, or
+  the chat panel); a window you opened yourself needs File > Revert to show changes made on disk.
 
 ## 3. Chat panel
 
@@ -166,13 +173,15 @@ terminal:
 inkscape-claude-chat drawing.svg       # opens the file in Inkscape and the chat in your browser
 ```
 
-- On Linux the chat keeps the Inkscape window in sync: before each message it saves the drawing, so Claude
-  sees your latest changes, and afterwards it reloads the window to show Claude's edits. Elsewhere, use
-  File > Revert in Inkscape after an answer.
+- The chat keeps the Inkscape window in sync: before each message it saves the drawing, so Claude sees your
+  latest changes, and afterwards it reloads the window to show Claude's edits.
+- On Linux that is the window you already have open. On macOS and Windows the chat opens the drawing in its
+  own Inkscape window (started from Inkscape, close the original one so you don't edit two copies). The
+  chat stops when you close that window, and saves and closes the window when you stop the chat.
 - **Undo** reverts Claude's last edit, and Claude is told about it.
 - The page only listens on 127.0.0.1 and needs a random token from the link it opens, so other websites
   cannot send it messages. Started from Inkscape, it stops after two hours without use.
-- Options: `--model`, `--effort`, `--attach` (the file is already open in Inkscape), `--window N`,
+- Options: `--model`, `--effort`, `--attach` (the file is already open in Inkscape; Linux only), `--window N`,
   `--no-live`, `--no-browser`, `--port`, `--idle-minutes`.
 
 ## Tests
@@ -182,10 +191,12 @@ pip install pytest
 python -m pytest tests            # the live test is skipped without a display; the extension runs against a fake Claude API, no key needed
 python tests/smoke_mcp.py         # starts the MCP server and calls every tool once (needs Inkscape)
 xvfb-run -a dbus-run-session -- python -m pytest tests/test_live.py   # live control against a real Inkscape window
+xvfb-run -a python -m pytest tests/test_shell.py                      # live control through the shell (macOS/Windows path)
 python examples/demo_drawing.py   # draws the demo badge into the workspace
 ```
 
-Tested with Inkscape 1.2.2, Python 3.13, `mcp` 2.3, `inkex` 1.4 and `anthropic` 2.6 on Linux.
+Tested with Inkscape 1.2.2 and 1.4.2, Python 3.13, `mcp` 2.3, `inkex` 1.4 and `anthropic` 2.6 on Linux. The
+shell path is the one macOS and Windows use, but it has only been run on Linux so far.
 
 ## Ideas for next steps
 
