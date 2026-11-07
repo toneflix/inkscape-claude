@@ -125,3 +125,47 @@ def test_settings_apply_to_the_next_message_and_a_key_is_needed(tmp_path):
     session.configure("", "loud")
 
     assert (client.model, client.effort, client.api_key) == ("claude-opus-5-5", "medium", "sk-new")
+
+
+class MarkingLive:
+    """Stands in for a live Inkscape window: marking the selection writes the mark into the file on save."""
+
+    def __init__(self, path, selected):
+        self.path, self.selected, self.actions, self.reloads = path, selected, [], 0
+
+    def available(self):
+        return True
+
+    def run(self, actions, window=None):
+        self.actions += actions
+
+    def save(self, window=None):
+        doc = SvgDocument.load(self.path)
+        for element_id in self.selected:
+            doc.find(element_id).set("data-claude-selected", "1")
+        doc.save(self.path)
+
+    def reload(self, window=None):
+        self.reloads += 1
+
+
+def test_the_selection_in_inkscape_is_sent_with_the_message(tmp_path):
+    path = tmp_path / "drawing.svg"
+    doc = SvgDocument.blank(200, 100)
+    doc.add('<rect id="a" width="5" height="5"/><rect id="b" x="10" width="5" height="5"/>')
+    doc.save(path)
+    client = ScriptedClient([done("Made them blue."), done("Hello.")])
+    live = MarkingLive(path, ["b", "a"])
+    session = ChatSession(path, client, Inkscape(), live)
+
+    reply = session.send("Make these blue")
+
+    assert reply["selection"] == ["a", "b"]
+    assert live.actions == ["object-set-attribute:data-claude-selected,1"]
+    assert client.calls[0][0]["content"][-1]["text"].startswith("(Selected in Inkscape: a, b.")
+    assert "data-claude-selected" not in path.read_text()
+    assert live.reloads == 1
+
+    live.selected = []
+    assert session.send("Hi")["selection"] == []
+    assert client.calls[1][-1]["content"][-1]["text"] == "Hi"

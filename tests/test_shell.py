@@ -117,7 +117,7 @@ def test_chat_keeps_its_own_window_in_sync(shell_window, tmp_path):
 
     live.run(["select-by-id:c1", "object-flip-horizontal"])
     client = ScriptedClient([tool_call("a", "update_element", element_id="r1", style={"fill": "orange"}),
-                             done("Made the square orange.")])
+                             done("Made the square orange."), done("Nothing to change.")])
     session = ChatSession(document, client, Inkscape(), live, window)
 
     reply = session.send("Make the square orange")
@@ -127,6 +127,11 @@ def test_chat_keeps_its_own_window_in_sync(shell_window, tmp_path):
     assert reply["text"] == "Made the square orange."
     assert "fill:orange" in shown.find("r1").get("style", ""), "window reloaded with Claude's edit"
     assert shown.find("c1").get("transform"), "the unsaved flip was saved before Claude edited"
+    assert reply["selection"] == ["c1"], "the circle was still selected in the window"
+    assert "Selected in Inkscape: c1" in client.calls[0][0]["content"][-1]["text"]
+    assert "data-claude-selected" not in document.read_text() + shown.to_string()
+
+    assert session.send("Anything else?")["selection"] == [], "the reload cleared the selection"
 
 
 def test_actions_with_separators_are_refused():

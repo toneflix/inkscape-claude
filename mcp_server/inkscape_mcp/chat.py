@@ -28,10 +28,11 @@ from .cli import Inkscape, InkscapeError
 from .live import LiveError, LiveInkscape
 from .operations import DocumentOperations
 from .shell import ShellInkscape, live_control
-from .svgdoc import SvgError
+from .svgdoc import SvgDocument, SvgError
 from .workspace import History
 
 PAGE = Path(__file__).with_name("chat.html")
+SELECTION_MARK = "data-claude-selected"
 
 EXPECTED_ERRORS = (ClaudeError, InkscapeError, LiveError, SvgError, OSError, ValueError)
 
@@ -134,21 +135,22 @@ class ChatSession:
                               "Claude Code in Settings to use your subscription.")
 
         with self.lock:
-            self.sync_from_inkscape()
+            selection = self.sync_from_inkscape()
             self.transcript.append({"role": "user", "text": text})
 
-            prompt = "\n".join([*self.notes, text])
+            prompt = "\n".join([*self.notes, self.selection_note(selection), text]).strip()
             self.notes.clear()
             try:
                 result = self.agent.run(prompt)
             except EXPECTED_ERRORS as exc:
                 self.transcript.append({"role": "system", "text": f"Error: {exc}"})
                 raise
+            finally:
+                self.sync_to_inkscape()
 
-            entry = {"role": "assistant", "text": result.reply, "steps": [asdict(step) for step in result.steps]}
+            entry = {"role": "assistant", "text": result.reply, "steps": [asdict(step) for step in result.steps],
+                     "selection": selection}
             self.transcript.append(entry)
-
-            self.sync_to_inkscape()
 
             return {**entry, "preview": self.preview()}
 
@@ -167,9 +169,37 @@ class ChatSession:
     def preview(self) -> str:
         return base64.b64encode(self.operations.preview(self.path, 600)).decode("ascii")
 
-    def sync_from_inkscape(self) -> None:
-        if self.live_enabled:
-            self.live.save(self.window)
+    @staticmethod
+    def selection_note(selection: list[str]) -> str:
+        if not selection:
+            return ""
+
+        return (f"(Selected in Inkscape: {', '.join(selection)}. When I say this, these, it or them, I mean "
+                "these objects.)")
+
+    def sync_from_inkscape(self) -> list[str]:
+        """Saves the drawing from the Inkscape window and returns the ids of the objects selected in it.
+
+        Inkscape keeps the selection out of the file, so the selected objects are marked with an attribute
+        first, and the mark is taken out of the saved file. Reloading the window afterwards clears it there."""
+        if not self.live_enabled:
+            return []
+
+        try:
+            self.live.run([f"object-set-attribute:{SELECTION_MARK},1"], self.window)
+        except LiveError:
+            pass
+        self.live.save(self.window)
+
+        return self.take_selection()
+
+    def take_selection(self) -> list[str]:
+        doc = SvgDocument.load(self.path)
+        selection = doc.pop_marked(SELECTION_MARK)
+        if selection:
+            doc.save(self.path)
+
+        return selection
 
     def sync_to_inkscape(self) -> None:
         if self.live_enabled:

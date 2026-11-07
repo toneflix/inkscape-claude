@@ -235,7 +235,7 @@ class ChatWindow:
     def finish(self, result: dict) -> bool:
         self.set_busy(False, "")
         self.add_message(result.get("role", "system"), result.get("text", ""), result.get("steps"),
-                         result.get("preview"))
+                         result.get("preview"), result.get("selection"))
         self.refresh_badge()
 
         return False
@@ -249,7 +249,8 @@ class ChatWindow:
         else:
             self.spinner.stop()
 
-    def add_message(self, role: str, text: str, steps: list[dict] | None = None, preview: str | None = None) -> None:
+    def add_message(self, role: str, text: str, steps: list[dict] | None = None, preview: str | None = None,
+                    selection: list[str] | None = None) -> None:
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         bubble.get_style_context().add_class("bubble")
         bubble.get_style_context().add_class(role)
@@ -257,6 +258,12 @@ class ChatWindow:
         label = Gtk.Label(label=text, xalign=0, wrap=True, selectable=True, can_focus=False)
         label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
         bubble.pack_start(label, False, False, 0)
+
+        if selection:
+            selected = Gtk.Label(label="Your selection: " + ", ".join(selection), xalign=0, wrap=True,
+                                 selectable=True, can_focus=False)
+            selected.get_style_context().add_class("steps")
+            bubble.pack_start(selected, False, False, 0)
 
         if steps:
             lines = [("✗ " if step.get("failed") else "• ") + f"{step['tool']}: {step['summary']}" for step in steps]

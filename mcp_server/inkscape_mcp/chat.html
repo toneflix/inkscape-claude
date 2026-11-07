@@ -59,6 +59,7 @@
   .system.error { color: var(--error); }
   details { margin-top: 8px; color: var(--muted); font-size: 12px; white-space: normal; }
   details li.failed { color: var(--error); }
+  .selection { margin-top: 6px; color: var(--muted); font-size: 12px; }
   details ul { margin: 6px 0 0; padding-left: 18px; }
   .preview { display: block; margin-top: 10px; max-width: 100%; border: 1px solid var(--border); border-radius: 6px;
              background: #fff; }
@@ -117,6 +118,13 @@
     div.className = `msg ${entry.role}` + (entry.text.startsWith("Error:") ? " error" : "");
     div.textContent = entry.text;
 
+    if (entry.selection && entry.selection.length) {
+      const selected = document.createElement("div");
+      selected.className = "selection";
+      selected.textContent = `Your selection: ${entry.selection.join(", ")}`;
+      div.append(selected);
+    }
+
     if (entry.steps && entry.steps.length) {
       const details = document.createElement("details");
       const summary = document.createElement("summary");
@@ -153,7 +161,8 @@
     busy(true, waiting);
     try {
       const result = await api(path, body);
-      add({ role: result.role || "system", text: result.text, steps: result.steps }, result.preview);
+      add({ role: result.role || "system", text: result.text, steps: result.steps, selection: result.selection },
+          result.preview);
     } catch (error) {
       add({ role: "system", text: `Error: ${error.message}` });
     } finally {

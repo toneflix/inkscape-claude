@@ -200,6 +200,8 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
   chat stops when you close that window, and saves and closes the window when you stop the chat.
 - **Settings** in the chat window holds how to reach Claude, the model, effort and API key. They are saved in
   the config file above, so Ask Claude uses the same key, and changes apply from the next message.
+- Whatever you have selected in the Inkscape window goes with your message, so "make these blue" works. The
+  chat shows which objects were sent. Pages can be named by number or label ("on page 2", "the Back page").
 - **Undo** reverts Claude's last edit, and Claude is told about it. **Enter** sends, **Shift+Enter** adds a line.
 - The window uses GTK 3, which the Python bundled with Inkscape already has on Windows and macOS. Where GTK
   is missing, the chat opens in your browser instead.
