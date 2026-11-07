@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import copy
 import itertools
+import re
 from collections import Counter
 from pathlib import Path
 
 from lxml import etree
+
+from .pages import UNIT_PX, Box, Pages
 
 SVG_NS = "http://www.w3.org/2000/svg"
 INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
@@ -98,6 +101,67 @@ class SvgDocument:
     def root(self):
         return self.tree.getroot()
 
+    @property
+    def pages(self) -> Pages:
+        return Pages(self)
+
+    def viewbox(self) -> Box:
+        values = re.split(r"[\s,]+", (self.root.get("viewBox") or "").strip())
+        if len(values) == 4:
+            try:
+                return tuple(float(value) for value in values)
+            except ValueError:
+                pass
+
+        return 0.0, 0.0, self._length_px("width") or 0.0, self._length_px("height") or 0.0
+
+    def width_unit(self) -> str:
+        match = re.match(r"\s*[-+0-9.eE]+\s*([a-zA-Z]*)", self.root.get("width") or "")
+        unit = match.group(1).lower() if match else ""
+
+        return unit if unit in UNIT_PX else ""
+
+    def user_unit_px(self) -> float:
+        """How many CSS px one user unit is; Inkscape measures, exports and translates in px."""
+        width_px = self._length_px("width")
+        view_width = self.viewbox()[2]
+
+        return width_px / view_width if width_px and view_width else 1.0
+
+    def to_px(self, box: Box) -> Box:
+        scale, (origin_x, origin_y, *_) = self.user_unit_px(), self.viewbox()
+        x, y, width, height = box
+
+        return (x - origin_x) * scale, (y - origin_y) * scale, width * scale, height * scale
+
+    def from_px(self, box: Box) -> Box:
+        scale, (origin_x, origin_y, *_) = self.user_unit_px(), self.viewbox()
+        x, y, width, height = box
+
+        return x / scale + origin_x, y / scale + origin_y, width / scale, height / scale
+
+    def drawn_objects(self) -> list:
+        """The objects people place: children of layers, plus anything at the top level that is not a layer."""
+        objects = []
+
+        for child in self.root:
+            if not isinstance(child.tag, str) or etree.QName(child).localname in NON_VISUAL:
+                continue
+            if child.get(f"{{{INKSCAPE_NS}}}groupmode") == "layer":
+                objects += [item for item in child if isinstance(item.tag, str)
+                            and etree.QName(item).localname not in NON_VISUAL]
+            else:
+                objects.append(child)
+
+        return objects
+
+    def _length_px(self, name: str) -> float | None:
+        match = re.match(r"\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\s*([a-zA-Z%]*)", self.root.get(name) or "")
+        if not match or match.group(2).lower() not in UNIT_PX:
+            return None
+
+        return float(match.group(1)) * UNIT_PX[match.group(2).lower()]
+
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.tree.write(str(path), xml_declaration=True, encoding="UTF-8", standalone=False)
@@ -182,10 +246,12 @@ class SvgDocument:
 
         return list(element_ids)
 
-    def outline(self, max_depth: int = 6, bboxes: dict[str, tuple[float, float, float, float]] | None = None) -> str:
+    def outline(self, max_depth: int = 6, bboxes: dict[str, Box] | None = None) -> str:
+        """bboxes are in user units, like the page positions."""
         root = self.root
         lines = [f"svg id={root.get('id')} width={root.get('width')} height={root.get('height')} "
                  f"viewBox={root.get('viewBox')}"]
+        lines += [f"  {page.describe()}" for page in self.pages.list()]
         self._outline_children(root, 1, max_depth, bboxes or {}, lines)
 
         return "\n".join(lines)
@@ -199,7 +265,7 @@ class SvgDocument:
             if name in NON_VISUAL:
                 continue
 
-            lines.append(f"{'  ' * depth}{self._describe(child, name, bboxes)}")
+            lines.append(f"{'  ' * depth}{self._describe(child, name, bboxes)}{self._placement(child, bboxes)}")
             if depth < max_depth:
                 self._outline_children(child, depth + 1, max_depth, bboxes, lines)
 
@@ -231,6 +297,19 @@ class SvgDocument:
             bits.append(f"bbox=({x:.1f},{y:.1f},{w:.1f}x{h:.1f})")
 
         return " ".join(bits)
+
+    def _placement(self, element, bboxes) -> str:
+        if element.get("id") not in bboxes or element.get(f"{{{INKSCAPE_NS}}}groupmode") == "layer":
+            return ""
+
+        pages = self.pages
+        under = pages.pages_under(bboxes[element.get("id")])
+        if not under:
+            return " off-page"
+        if len(pages.list()) == 1:
+            return ""
+
+        return " on page " + ",".join(str(page.number) for page in under)
 
     @staticmethod
     def _parse_fragment(fragment: str) -> list:

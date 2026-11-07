@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from .cli import Inkscape
+from .pages import Box, Page
 from .svgdoc import SvgDocument
 from .workspace import History
 
@@ -20,6 +21,8 @@ BOOLEAN_ACTIONS = {"union": "path-union", "difference": "path-difference", "inte
                    "combine": "path-combine"}
 
 SINGLE_RESULT_OPERATIONS = {"union", "difference", "intersection", "exclusion", "combine"}
+
+Area = str | tuple[float, float, float, float]
 
 
 class DocumentOperations:
@@ -43,10 +46,69 @@ class DocumentOperations:
     def undo(self, path: Path) -> int | None:
         return self.history.undo(path)
 
-    def outline(self, path: Path, with_bboxes: bool = False) -> str:
-        bboxes = self.inkscape.query_all(path) if with_bboxes else None
+    def boxes(self, path: Path, doc: SvgDocument | None = None) -> dict[str, Box]:
+        """Inkscape-measured bounding boxes, converted from px to the document's user units."""
+        doc = doc or SvgDocument.load(path)
 
-        return SvgDocument.load(path).outline(bboxes=bboxes)
+        return {key: doc.from_px(box) for key, box in self.inkscape.query_all(path).items()}
+
+    def outline(self, path: Path, with_bboxes: bool = False) -> str:
+        doc = SvgDocument.load(path)
+
+        return doc.outline(bboxes=self.boxes(path, doc) if with_bboxes else None)
+
+    def pages(self, path: Path) -> str:
+        doc = SvgDocument.load(path)
+        boxes = self.boxes(path, doc)
+        objects = [(item.get("id"), boxes[item.get("id")]) for item in doc.drawn_objects() if item.get("id") in boxes]
+        lines = []
+
+        scale = doc.user_unit_px()
+        if abs(scale - 1) > 1e-6:
+            lines.append(f"Positions and sizes are in user units (1 user unit = {scale:.4g}px).")
+
+        for page in doc.pages.list():
+            on_page = [object_id for object_id, box in objects if page.overlap(box) > 0]
+            lines.append(page.describe())
+            lines.append(f"  objects: {', '.join(on_page) if on_page else '(empty)'}")
+
+        off_page = [object_id for object_id, box in objects if not doc.pages.pages_under(box)]
+        if off_page:
+            lines.append(f"Off every page: {', '.join(off_page)}")
+
+        return "\n".join(lines)
+
+    def add_page(self, path: Path, width: float | None = None, height: float | None = None, x: float | None = None,
+                 y: float | None = None, label: str | None = None) -> Page:
+        return self.edit(path, lambda doc: doc.pages.add(width, height, x, y, label))
+
+    def update_page(self, path: Path, page: str | int, label: str | None = None, x: float | None = None,
+                    y: float | None = None, width: float | None = None, height: float | None = None) -> Page:
+        return self.edit(path, lambda doc: doc.pages.update(page, label, x, y, width, height))
+
+    def delete_page(self, path: Path, page: str | int) -> Page:
+        return self.edit(path, lambda doc: doc.pages.delete(page))
+
+    def move_to_page(self, path: Path, element_ids: list[str], page: str | int) -> Page:
+        """Moves each object by the offset between its page and the target page, so it keeps its spot on the
+        page. Objects that are on no page are centred on the target page."""
+        doc = SvgDocument.load(path)
+        target = doc.pages.get(page)
+        boxes = self._boxes_for(path, doc, element_ids)
+        moves = {}
+
+        for element_id, box in boxes.items():
+            current = doc.pages.page_of(box)
+            if current:
+                moves[element_id] = (target.x - current.x, target.y - current.y)
+            else:
+                x, y, width, height = box
+                moves[element_id] = (target.x + (target.width - width) / 2 - x,
+                                     target.y + (target.height - height) / 2 - y)
+
+        self._translate(path, doc, moves)
+
+        return target
 
     def element(self, path: Path, element_id: str) -> str:
         return SvgDocument.load(path).element_source(element_id)
@@ -96,16 +158,22 @@ class DocumentOperations:
         return log
 
     def align(self, path: Path, element_ids: list[str], horizontal: str | None = None, vertical: str | None = None,
-              relative_to: str = "page") -> str:
+              relative_to: str = "page", page: str | int | None = None) -> str:
+        """With several pages, "page" means the page given, or else the page each object is on (Inkscape's own
+        Align would use the first page)."""
         if not horizontal and not vertical:
             raise ValueError("Give horizontal and/or vertical.")
+
+        doc = SvgDocument.load(path)
+        if relative_to == "page" and (page is not None or len(doc.pages.list()) > 1):
+            return self._align_to_page(path, doc, element_ids, horizontal, vertical, page)
 
         anchor = " ".join(side for side in (horizontal, vertical) if side)
 
         return self.run_actions(path, [f"select-by-id:{','.join(element_ids)}", f"object-align:{anchor} {relative_to}"])
 
     def bounding_boxes(self, path: Path, element_ids: list[str] | None = None) -> str:
-        boxes = self.inkscape.query_all(path)
+        boxes = self.boxes(path)
         if element_ids:
             boxes = {key: box for key, box in boxes.items() if key in element_ids}
 
@@ -113,10 +181,72 @@ class DocumentOperations:
 
         return "\n".join(lines) or "No matches."
 
+    def area(self, path: Path, page: str | int | None = None, area: str = "pages") -> Area:
+        """An export area: one page, all pages ("pages"), or Inkscape's own "page" (the first) or "drawing"."""
+        doc = SvgDocument.load(path)
+
+        if page is not None:
+            return doc.to_px(doc.pages.get(page).box)
+        if area == "pages":
+            return doc.to_px(doc.pages.bounds())
+
+        return area
+
     def preview(self, path: Path, width: int = 800, element_id: str | None = None,
-                background: str = "#ffffff") -> bytes:
+                background: str = "#ffffff", page: str | int | None = None) -> bytes:
+        """Renders one element, one page, or by default every page together."""
+        area = "page" if element_id else self.area(path, page)
+
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "preview.png"
-            self.inkscape.export(path, output, "png", width=width, object_id=element_id, background=background)
+            self.inkscape.export(path, output, "png", width=width, object_id=element_id, area=area,
+                                 background=background)
 
             return output.read_bytes()
+
+    def _boxes_for(self, path: Path, doc: SvgDocument, element_ids: list[str]) -> dict[str, Box]:
+        if not element_ids:
+            raise ValueError("Give at least one element id.")
+
+        boxes = self.boxes(path, doc)
+        missing = [element_id for element_id in element_ids if element_id not in boxes]
+        if missing:
+            raise ValueError(f"No visible element with id: {', '.join(missing)}.")
+
+        return {element_id: boxes[element_id] for element_id in element_ids}
+
+    def _align_to_page(self, path: Path, doc: SvgDocument, element_ids: list[str], horizontal: str | None,
+                       vertical: str | None, page: str | int | None) -> str:
+        target = doc.pages.get(page) if page is not None else None
+        moves = {}
+
+        for element_id, box in self._boxes_for(path, doc, element_ids).items():
+            frame = target or doc.pages.page_of(box) or doc.pages.list()[0]
+            moves[element_id] = (self._offset(horizontal, box[0], box[2], frame.x, frame.width, "left", "right"),
+                                 self._offset(vertical, box[1], box[3], frame.y, frame.height, "top", "bottom"))
+
+        return self._translate(path, doc, moves)
+
+    @staticmethod
+    def _offset(side: str | None, start: float, size: float, frame_start: float, frame_size: float,
+                low: str, high: str) -> float:
+        if side == low:
+            return frame_start - start
+        if side == high:
+            return frame_start + frame_size - start - size
+        if side:
+            return frame_start + (frame_size - size) / 2 - start
+
+        return 0.0
+
+    def _translate(self, path: Path, doc: SvgDocument, moves: dict[str, tuple[float, float]]) -> str:
+        """Moves objects with Inkscape (it handles transforms and nesting); offsets are in user units."""
+        scale = doc.user_unit_px()
+        actions = []
+
+        for element_id, (dx, dy) in moves.items():
+            if abs(dx) > 1e-9 or abs(dy) > 1e-9:
+                actions += ["select-clear", f"select-by-id:{element_id}",
+                            f"transform-translate:{dx * scale:g},{dy * scale:g}"]
+
+        return self.run_actions(path, actions) if actions else ""
