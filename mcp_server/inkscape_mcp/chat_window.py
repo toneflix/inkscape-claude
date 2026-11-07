@@ -3,16 +3,39 @@
 from __future__ import annotations
 
 import base64
+import importlib.machinery
+import sys
 import threading
+import types
 from typing import Callable
+
+
+def skip_gio_unix_overrides() -> None:
+    """Stands in an empty module for PyGObject's GioUnix overrides on macOS.
+
+    Those overrides subclass GioUnix.DesktopAppInfo, which macOS builds of GLib (Inkscape's included) do not have,
+    so importing Gtk fails. The overrides only matter for Linux desktop files.
+    """
+    name = "gi.overrides.GioUnix"
+    if name in sys.modules:
+        return
+
+    stub = types.ModuleType(name)
+    stub.__all__ = []
+    stub.__spec__ = importlib.machinery.ModuleSpec(name, importlib.machinery.BuiltinImporter)
+    sys.modules[name] = stub
+
 
 try:
     import gi
 
+    if sys.platform == "darwin":
+        skip_gio_unix_overrides()
+
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
     from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango
-except (ImportError, ValueError):
+except Exception:
     Gtk = None
 
 from .chat import EXPECTED_ERRORS, ChatSession
