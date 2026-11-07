@@ -1,6 +1,7 @@
 #!/bin/sh
-# Copies the extension into the signed-in user's Inkscape and puts inkscape-mcp on PATH. When Homebrew's
-# dbus is installed, also starts a D-Bus session bus at login so Claude can follow your own Inkscape windows.
+# Copies the extension into the signed-in user's Inkscape and puts inkscape-mcp on PATH. With Homebrew, also
+# installs dbus and glib if missing and starts a D-Bus session bus at login, so Claude can follow your own
+# Inkscape windows. Without Homebrew that step is skipped and the chat opens its own window instead.
 
 set -eu
 
@@ -21,8 +22,23 @@ sudo -u "$user" cp -R "$APP_DIR/extension/claude" "$extensions/claude"
 mkdir -p /usr/local/bin
 ln -sf "$APP_DIR/bin/inkscape-mcp" /usr/local/bin/inkscape-mcp
 
-if [ -x /opt/homebrew/bin/dbus-daemon ] || [ -x /usr/local/bin/dbus-daemon ]; then
-    launchctl asuser "$(id -u "$user")" sudo -u "$user" HOME="$home" sh "$APP_DIR/macos-dbus.sh" install || true
+as_user() {
+    launchctl asuser "$(id -u "$user")" sudo -u "$user" HOME="$home" "$@"
+}
+
+brew=""
+for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    [ -x "$candidate" ] && brew="$candidate" && break
+done
+
+if [ -n "$brew" ]; then
+    prefix=$(dirname "$(dirname "$brew")")
+    if [ ! -x "$prefix/bin/dbus-daemon" ] || [ ! -x "$prefix/bin/gdbus" ]; then
+        as_user env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 "$brew" install dbus glib || true
+    fi
+    if [ -x "$prefix/bin/dbus-daemon" ]; then
+        as_user sh "$APP_DIR/macos-dbus.sh" install || true
+    fi
 fi
 
 exit 0
