@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
+  <name>Ask Claude…</name>
+  <id>org.inkscape_claude.ask_claude</id>
+
+  <param name="tab" type="notebook">
+    <page name="prompt" gui-text="Prompt">
+      <param name="prompt" type="string" appearance="multiline" gui-text="What should Claude do?"></param>
+      <param name="scope" type="optiongroup" appearance="combo" gui-text="Apply to:">
+        <option value="auto">Selection if there is one, otherwise the whole drawing</option>
+        <option value="document">The whole drawing</option>
+        <option value="selection">Only the selected objects</option>
+        <option value="add">Add new artwork to the current layer</option>
+      </param>
+      <param name="send_image" type="bool" gui-text="Also send a picture of the canvas (better results, a few seconds slower)">true</param>
+      <param name="show_reply" type="bool" gui-text="Show Claude's notes after it finishes">true</param>
+      <label appearance="header">Inkscape is busy until Claude answers. This can take up to a minute or two.</label>
+    </page>
+    <page name="settings" gui-text="Settings">
+      <param name="model" type="string" gui-text="Model:">claude-opus-5-5</param>
+      <param name="effort" type="optiongroup" appearance="combo" gui-text="Effort:">
+        <option value="medium">Medium (default)</option>
+        <option value="low">Low (fastest)</option>
+        <option value="high">High</option>
+        <option value="xhigh">Extra high (slowest)</option>
+      </param>
+      <param name="api_key" type="string" gui-text="API key (leave empty to use ANTHROPIC_API_KEY or the config file):"></param>
+      <param name="max_tokens" type="int" min="1024" max="128000" gui-text="Max output tokens:">64000</param>
+      <label>The key can also go in ~/.config/inkscape-claude/config.json as {"api_key": "sk-ant-..."}.</label>
+    </page>
+  </param>
+
+  <effect needs-live-preview="false">
+    <object-type>all</object-type>
+    <effects-menu>
+      <submenu name="Claude"/>
+    </effects-menu>
+  </effect>
+
+  <script>
+    <command location="inx" interpreter="python">ask_claude.py</command>
+  </script>
+</inkscape-extension>
