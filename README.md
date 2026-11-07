@@ -55,19 +55,36 @@ and export a PDF."*
 
 | Tool | What it does |
 | --- | --- |
-| `create_document` | New blank page (with a layer) or from full SVG source |
-| `read_document` | Compact outline of elements (ids, labels, fills, text, optional bounding boxes) or full source |
+| `create_document` | New blank document (with a layer and any number of pages) or from full SVG source |
+| `read_document` | Compact outline of pages and elements (ids, labels, fills, text, optional bounding boxes and the page each element is on) or full source |
 | `write_document` | Replace the whole document |
 | `add_elements` / `update_element` / `replace_element` / `delete_elements` / `get_element` | Element-level edits; new elements get unique ids |
-| `render_preview` | Renders the page or one object to PNG and returns the image so Claude can check its work |
-| `export_document` | PNG, PDF, EPS, PS, EMF, WMF or plain SVG; page, drawing or one object; DPI/size |
+| `render_preview` | Renders every page, one page or one object to PNG and returns the image so Claude can check its work |
+| `export_document` | PNG, PDF, EPS, PS, EMF, WMF or plain SVG; one page, all pages, the drawing or one object; DPI/size |
 | `boolean_operation` | Union, difference, intersection, exclusion, division, cut, combine |
-| `align_objects` | Inkscape's Align tool (relative to page, drawing, selection, first, last…) |
+| `align_objects` | Inkscape's Align tool (relative to page, drawing, selection, first, last…); with several pages, "page" means the object's own page or the one you name |
 | `run_actions` | Any Inkscape 1.x action list, e.g. `["select-by-id:a,b", "object-flip-horizontal"]` |
 | `list_actions` | Searches the action names Inkscape knows |
 | `get_bounding_boxes` | Inkscape-measured geometry (handles text, transforms and strokes) |
 | `undo_last_change` | Every edit snapshots the file first; this steps back one snapshot |
 | `list_documents`, `inkscape_info`, `open_in_inkscape` | Housekeeping; the last opens the file in the Inkscape app |
+
+### Pages (artboards)
+
+Inkscape 1.2 and later can hold several pages on one canvas. Claude sees them in every outline and can work
+with them directly:
+
+| Tool | What it does |
+| --- | --- |
+| `list_pages` | Each page's number, id, label, position and size, and the objects on it (plus anything off every page) |
+| `add_page` | Adds a page, by default the size of the last one and to its right |
+| `update_page` | Renames, moves or resizes a page |
+| `delete_page` | Removes a page; its objects stay on the canvas |
+| `move_to_page` | Moves objects to another page, keeping their spot on the page |
+
+Pages can be named by number (from 1), id or label, e.g. `page="Back"`. Positions and sizes are in the
+document's user units, the same numbers as in the SVG, so in a millimetre document they are millimetres.
+A document with no pages defined has one page: its viewBox.
 
 ### Live control (Linux)
 
@@ -131,7 +148,8 @@ Get a key from the [Claude Console](https://platform.claude.com/), then do one o
   the MCP server offers. *Rewrite the SVG in one go* is faster and asks Claude for the finished SVG directly.
 - **Apply to**: the selection if there is one, otherwise the whole drawing (default); or force whole
   drawing / selection only; or *Add new artwork* to the current layer without touching anything else.
-- A picture of the canvas is sent along by default so Claude can see what it is editing.
+- A picture of the canvas, covering every page, is sent along by default so Claude can see what it is editing.
+  Claude is also told the position, size and label of each page, and which page the selection is on.
 - Defaults: model `claude-opus-5-5`, adaptive thinking, effort `medium`. Change them in Settings.
 - In rewrite mode, embedded raster images are swapped for short placeholders before sending and restored
   afterwards, so a photo in the document does not use up the request.
@@ -154,8 +172,8 @@ Inkscape's bundled Python on Windows and macOS usually does not have extra packa
 ## 3. Chat panel
 
 A conversation with Claude that keeps going across many edits, in a browser page you keep next to
-Inkscape. Claude edits the drawing step by step with the same tools as above, shows a preview after each
-answer, and remembers what you asked before ("now make those stars smaller").
+Inkscape. Claude edits the drawing step by step with the same tools as above (pages included), shows a preview of
+every page after each answer, and remembers what you asked before ("now make those stars smaller").
 
 <img src="examples/chat-panel.png" alt="The chat panel after Claude added stars to the demo badge" width="360">
 
