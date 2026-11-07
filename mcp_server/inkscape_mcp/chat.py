@@ -18,6 +18,7 @@ from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 from .agent import DrawingAgent
@@ -25,6 +26,7 @@ from .claude import DEFAULT_MODEL, ClaudeClient, ClaudeError, Config
 from .cli import Inkscape, InkscapeError
 from .live import LiveError, LiveInkscape
 from .operations import DocumentOperations
+from .shell import ShellInkscape, live_control
 from .svgdoc import SvgError
 from .workspace import History
 
@@ -36,8 +38,8 @@ EXPECTED_ERRORS = (ClaudeError, InkscapeError, LiveError, SvgError, OSError, Val
 class ChatSession:
     """One conversation about one SVG file, keeping an open Inkscape window in sync when it can."""
 
-    def __init__(self, path: Path, client: ClaudeClient, inkscape: Inkscape, live: LiveInkscape | None,
-                 window: int | None = None):
+    def __init__(self, path: Path, client: ClaudeClient, inkscape: Inkscape,
+                 live: LiveInkscape | ShellInkscape | None, window: int | None = None):
         self.path = path
         self.live = live
         self.window = window
@@ -174,9 +176,12 @@ class ChatServer(ThreadingHTTPServer):
 
     def stop_when_idle(self, minutes: float) -> None:
         """Shut the server down after `minutes` without requests."""
+        self.stop_when(lambda: time.monotonic() - self.last_activity >= minutes * 60, min(30.0, minutes * 60))
+
+    def stop_when(self, done: Callable[[], bool], every: float = 2.0) -> None:
         def watch():
-            while time.monotonic() - self.last_activity < minutes * 60:
-                time.sleep(min(30, minutes * 60))
+            while not done():
+                time.sleep(every)
             self.shutdown()
 
         threading.Thread(target=watch, daemon=True).start()
@@ -195,7 +200,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-browser", action="store_true", help="print the link instead of opening a browser")
     parser.add_argument("--no-live", action="store_true", help="do not open or sync an Inkscape window")
     parser.add_argument("--attach", action="store_true",
-                        help="the document is already open in Inkscape; sync with the newest window")
+                        help="the document is already open in Inkscape; sync with the newest window (Linux only; "
+                             "elsewhere the chat opens its own window)")
     parser.add_argument("--window", type=int, help="Inkscape window number to sync with")
     parser.add_argument("--idle-minutes", type=float, help="stop after this many minutes without requests")
 
@@ -214,16 +220,22 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(str(exc))
 
     inkscape = Inkscape.from_env()
-    live = None if args.no_live else LiveInkscape(inkscape)
+    live = None if args.no_live else live_control(inkscape)
+    owns_window = isinstance(live, ShellInkscape)
     window = args.window
-    if live is not None and not args.attach and window is None:
-        window = live.open(document)
+    if live is not None and (owns_window or not args.attach) and window is None:
+        try:
+            window = live.open(document)
+        except LiveError as exc:
+            print(f"Could not open an Inkscape window to keep in sync: {exc}", flush=True)
 
     session = ChatSession(document, client, inkscape, live, window)
     server = ChatServer(session, args.port)
     print(f"Claude chat for {document}\nOpen: {server.url}\nPress Ctrl+C to stop.", flush=True)
 
-    if args.idle_minutes:
+    if owns_window and live.available():
+        server.stop_when(lambda: not live.available())
+    elif args.idle_minutes:
         server.stop_when_idle(args.idle_minutes)
     if not args.no_browser:
         webbrowser.open(server.url)
@@ -234,6 +246,8 @@ def main(argv: list[str] | None = None) -> None:
         pass
     finally:
         server.server_close()
+        if owns_window:
+            live.close()
 
 
 if __name__ == "__main__":

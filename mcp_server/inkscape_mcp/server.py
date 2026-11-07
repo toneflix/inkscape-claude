@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import functools
 import subprocess
 import tempfile
@@ -12,8 +13,9 @@ from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .cli import Inkscape, InkscapeError
-from .live import LiveError, LiveInkscape
+from .live import LiveError
 from .operations import DocumentOperations
+from .shell import ShellInkscape, live_control
 from .svgdoc import SvgDocument, SvgError
 from .workspace import Workspace
 
@@ -21,7 +23,7 @@ EXPECTED_ERRORS = (ValueError, OSError, SvgError, InkscapeError, LiveError)
 
 workspace = Workspace.from_env()
 inkscape = Inkscape.from_env()
-live = LiveInkscape(inkscape)
+live = live_control(inkscape)
 operations = DocumentOperations(inkscape, workspace.history)
 
 server = MCPServer(
@@ -37,8 +39,9 @@ server = MCPServer(
         "what sits on each; add_page, update_page, delete_page and move_to_page change them, and render_preview "
         "and export_document take a page. "
         "Every edit keeps a snapshot, so undo_last_change can revert a mistake. "
-        "On Linux the live_* tools work on the Inkscape window the person has open: live_snapshot shows it, "
-        "live_run_actions changes it directly, and for file edits call live_save, edit the file, then live_reload."
+        "The live_* tools work on an open Inkscape window: live_snapshot shows it, live_run_actions changes it "
+        "directly, and for file edits call live_save, edit the file, then live_reload. On Linux that can be a window "
+        "the person opened; on macOS and Windows, open the document with live_open first."
     ),
 )
 
@@ -361,15 +364,30 @@ def live_status() -> str:
     return f"Live control available. Windows: {live.windows()}. Documents: {live.documents()}."
 
 
+def close_live_windows() -> None:
+    """Windows the server opened itself close with it; save them first."""
+    if isinstance(live, ShellInkscape):
+        live.close()
+
+
+atexit.register(close_live_windows)
+
+
 @tool
 def live_open(path: str) -> str:
-    """Open a workspace document in the running Inkscape (starting Inkscape if needed) for live editing."""
+    """Open a workspace document in Inkscape (starting Inkscape if needed) for live editing.
+
+    On macOS and Windows this is the only way to get a window Claude can follow. That window is saved and
+    closed when the server stops.
+    """
     source = workspace.resolve(path)
     window = live.open(source)
     if window is None:
         return f"Asked Inkscape to open {workspace.relative(source)}, but no new window showed up on D-Bus."
 
-    return f"Opened {workspace.relative(source)} in Inkscape window {window}."
+    note = " It stays in sync until this server stops." if isinstance(live, ShellInkscape) else ""
+
+    return f"Opened {workspace.relative(source)} in Inkscape window {window}.{note}"
 
 
 @tool

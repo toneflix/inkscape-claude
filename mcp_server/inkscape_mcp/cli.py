@@ -51,6 +51,14 @@ class Inkscape:
 
         raise InkscapeError("Inkscape was not found. Install Inkscape 1.x or set INKSCAPE_BIN to its path.")
 
+    @property
+    def console_binary(self) -> str:
+        """On Windows, inkscape.com reads standard input; inkscape.exe does not."""
+        binary = Path(self.binary)
+        console = binary.with_suffix(".com")
+
+        return str(console) if binary.suffix.lower() == ".exe" and console.exists() else str(binary)
+
     def run(self, args: list[str]) -> str:
         env = {**os.environ, "SELF_CALL": os.environ.get("SELF_CALL", "1")}
 
