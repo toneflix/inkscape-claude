@@ -192,10 +192,31 @@ class DocumentOperations:
 
         return area
 
+    def focus_area(self, path: Path, element_ids: list[str], padding: float = 0.15) -> Area | None:
+        """The px area around the given elements with some room on each side, widened so it is at most twice as
+        tall as wide, or None when none of them is drawn any more."""
+        doc = SvgDocument.load(path)
+        boxes = [box for key, box in self.boxes(path, doc).items() if key in element_ids]
+        if not boxes:
+            return None
+
+        left = min(x for x, _, _, _ in boxes)
+        top = min(y for _, y, _, _ in boxes)
+        width = max(x + w for x, _, w, _ in boxes) - left
+        height = max(y + h for _, y, _, h in boxes) - top
+        margin = max(width, height, 1.0) * padding
+        left, top, width, height = left - margin, top - margin, width + 2 * margin, height + 2 * margin
+
+        extra = max(0.0, height / 2 - width)
+
+        return doc.to_px((left - extra / 2, top, width + extra, height))
+
     def preview(self, path: Path, width: int = 800, element_id: str | None = None,
-                background: str = "#ffffff", page: str | int | None = None) -> bytes:
-        """Renders one element, one page, or by default every page together."""
-        area = "page" if element_id else self.area(path, page)
+                background: str = "#ffffff", page: str | int | None = None,
+                focus: list[str] | None = None) -> bytes:
+        """Renders one element, one page, the area around the `focus` elements, or by default every page
+        together."""
+        area = (focus and self.focus_area(path, focus)) or ("page" if element_id else self.area(path, page))
 
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "preview.png"

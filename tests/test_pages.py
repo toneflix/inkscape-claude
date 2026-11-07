@@ -162,3 +162,16 @@ def test_agent_adds_a_page_and_moves_artwork_onto_it(tmp_path):
     assert [step.failed for step in result.steps] == [False] * 5
     assert 'page 2 id=page2 "Night": x=120 y=0 size=100x100\n  objects: sun' in pages_result
     assert "page 1 id=page1: x=0 y=0 size=100x100\n  objects: (empty)" in pages_result
+
+
+def test_preview_zooms_to_focus_objects(tmp_path):
+    path = tmp_path / "focus.svg"
+    doc = SvgDocument.blank(200, 100)
+    doc.add('<rect id="a" x="10" y="10" width="20" height="20"/><rect id="tall" x="150" y="0" width="2" height="80"/>')
+    doc.save(path)
+    operations = DocumentOperations(Inkscape())
+
+    assert png_size(operations.preview(path, 100)) == (100, 50)
+    assert png_size(operations.preview(path, 100, focus=["a"])) == (100, 100)
+    assert png_size(operations.preview(path, 100, focus=["tall"])) == (100, 200), "no taller than twice as wide"
+    assert png_size(operations.preview(path, 100, focus=["gone"])) == (100, 50), "deleted objects show everything"

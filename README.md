@@ -244,7 +244,8 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
 - **Settings** in the chat window holds how to reach Claude, the model, effort and API key. They are saved in
   the config file above, so Ask Claude uses the same key, and changes apply from the next message.
 - Whatever you have selected in the Inkscape window goes with your message, so "make these blue" works. The
-  chat shows which objects were sent. Pages can be named by number or label ("on page 2", "the Back page").
+  chat shows which objects were sent, and its preview zooms in on them (or shows the whole drawing when
+  nothing was selected). Pages can be named by number or label ("on page 2", "the Back page").
 - **Undo** reverts Claude's last edit, and Claude is told about it. **Enter** sends, **Shift+Enter** adds a line.
 - If the chat cannot start, Inkscape shows why. Its output goes to `chat.log` next to the config file
   (`~/.config/inkscape-claude/chat.log`, Windows: `%APPDATA%\inkscape-claude\chat.log`).
