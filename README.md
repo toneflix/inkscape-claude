@@ -7,8 +7,8 @@ Three ways for Claude to work with Inkscape 1.x:
    any other Inkscape action, and export to PNG/PDF/EPS.
 2. **Ask Claude…**: an Inkscape extension (`Extensions > Claude > Ask Claude…`). Type a prompt, and
    Claude edits the open drawing, only the selected objects, or adds new artwork. Ctrl+Z undoes it.
-3. **Chat panel**: a chat page next to Inkscape for a longer conversation about one drawing; the Inkscape
-   window updates after every answer.
+3. **Chat window**: a small window next to Inkscape for a longer conversation about one drawing; the Inkscape
+   window updates after every answer. No browser needed.
 
 ![Demo badge drawn through the MCP server](examples/demo-badge.png)
 
@@ -152,25 +152,25 @@ Inkscape's bundled Python on Windows and macOS usually does not have extra packa
 ### Limits of this first version
 
 - Inkscape freezes while Ask Claude waits for an answer (often 10–60 seconds), because extensions are
-  one-shot. The chat panel avoids this: it runs outside Inkscape and keeps the conversation going.
+  one-shot. The chat window avoids this: it runs outside Inkscape and keeps the conversation going.
 - *Selection only* replaces the selected objects in place. If they sit in different groups or layers,
   the result goes where the first one was.
 - On macOS and Windows, Claude can only follow an Inkscape window that it opened itself (`live_open`, or
-  the chat panel); a window you opened yourself needs File > Revert to show changes made on disk.
+  the chat window); a window you opened yourself needs File > Revert to show changes made on disk.
 
-## 3. Chat panel
+## 3. Chat window
 
-A conversation with Claude that keeps going across many edits, in a browser page you keep next to
-Inkscape. Claude edits the drawing step by step with the same tools as above, shows a preview after each
+A conversation with Claude that keeps going across many edits, in its own small window next to Inkscape. Claude edits the drawing step by step with the same tools as above, shows a preview after each
 answer, and remembers what you asked before ("now make those stars smaller").
 
-<img src="examples/chat-panel.png" alt="The chat panel after Claude added stars to the demo badge" width="360">
+![The chat window next to Inkscape after Claude added stars to a badge](examples/chat-window.png)
 
 Start it from Inkscape with **Extensions > Claude > Open Claude Chat…** (save the drawing first), or from a
 terminal:
 
 ```bash
-inkscape-claude-chat drawing.svg       # opens the file in Inkscape and the chat in your browser
+inkscape-claude-chat drawing.svg               # opens the file in Inkscape and the chat window
+inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your browser
 ```
 
 - The chat keeps the Inkscape window in sync: before each message it saves the drawing, so Claude sees your
@@ -178,11 +178,13 @@ inkscape-claude-chat drawing.svg       # opens the file in Inkscape and the chat
 - On Linux that is the window you already have open. On macOS and Windows the chat opens the drawing in its
   own Inkscape window (started from Inkscape, close the original one so you don't edit two copies). The
   chat stops when you close that window, and saves and closes the window when you stop the chat.
-- **Undo** reverts Claude's last edit, and Claude is told about it.
-- The page only listens on 127.0.0.1 and needs a random token from the link it opens, so other websites
-  cannot send it messages. Started from Inkscape, it stops after two hours without use.
-- Options: `--model`, `--effort`, `--attach` (the file is already open in Inkscape; Linux only), `--window N`,
-  `--no-live`, `--no-browser`, `--port`, `--idle-minutes`.
+- **Undo** reverts Claude's last edit, and Claude is told about it. **Enter** sends, **Shift+Enter** adds a line.
+- The window uses GTK 3, which the Python bundled with Inkscape already has on Windows and macOS. Where GTK
+  is missing, the chat opens in your browser instead.
+- The browser page (`--ui browser`) only listens on 127.0.0.1 and needs a random token from the link it opens,
+  so other websites cannot send it messages.
+- Options: `--ui app|browser`, `--model`, `--effort`, `--attach` (the file is already open in Inkscape; Linux
+  only), `--window N`, `--no-live`, and for the browser page `--no-browser`, `--port`, `--idle-minutes`.
 
 ## Tests
 
@@ -192,6 +194,7 @@ python -m pytest tests            # the live test is skipped without a display; 
 python tests/smoke_mcp.py         # starts the MCP server and calls every tool once (needs Inkscape)
 xvfb-run -a dbus-run-session -- python -m pytest tests/test_live.py   # live control against a real Inkscape window
 xvfb-run -a python -m pytest tests/test_shell.py                      # live control through the shell (macOS/Windows path)
+xvfb-run -a python -m pytest tests/test_chat_window.py                # the chat window (needs GTK 3 bindings)
 python examples/demo_drawing.py   # draws the demo badge into the workspace
 ```
 
@@ -200,7 +203,7 @@ shell path is the one macOS and Windows use, but it has only been run on Linux s
 
 ## Ideas for next steps
 
-- Run the chat panel inside Inkscape as a docked dialog once Inkscape's extension API allows it.
+- Dock the chat inside Inkscape once Inkscape's extension API allows it.
 - Pick the right window automatically when several drawings are open (today live sync uses the newest
   window unless `--window` is given).
 - Compact long chat conversations so they stay fast and cheap.
