@@ -12,6 +12,10 @@
         <option value="selection">Only the selected objects</option>
         <option value="add">Add new artwork to the current layer</option>
       </param>
+      <param name="method" type="optiongroup" appearance="combo" gui-text="How:">
+        <option value="tools">Step by step with Inkscape tools (best results)</option>
+        <option value="rewrite">Rewrite the SVG in one go (faster)</option>
+      </param>
       <param name="send_image" type="bool" gui-text="Also send a picture of the canvas (better results, a few seconds slower)">true</param>
       <param name="show_reply" type="bool" gui-text="Show Claude's notes after it finishes">true</param>
       <label appearance="header">Inkscape is busy until Claude answers. This can take up to a minute or two.</label>
