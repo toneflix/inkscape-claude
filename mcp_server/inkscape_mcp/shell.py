@@ -32,7 +32,7 @@ class ShellWindow:
         self._folder = Path(tempfile.mkdtemp(prefix="inkscape-claude-"))
         self._process = subprocess.Popen([inkscape.console_binary, "--with-gui", "--shell", str(path)],
                                          stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.DEVNULL, text=True, **self._hidden_console())
+                                         text=True, **self._hidden_console())
         threading.Thread(target=self._heartbeat, daemon=True).start()
 
     @property

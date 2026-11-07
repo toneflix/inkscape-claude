@@ -308,6 +308,7 @@ class ChatWindow:
         """When the chat owns the Inkscape window and it is closed, the chat closes too."""
         live = self.session.live_enabled
         if self.session.owns_window and self.was_live and not live:
+            print("The Inkscape window the chat opened has closed, so the chat closes too.", flush=True)
             self.window.destroy()
             return False
 

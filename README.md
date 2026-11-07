@@ -238,6 +238,8 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
 - Whatever you have selected in the Inkscape window goes with your message, so "make these blue" works. The
   chat shows which objects were sent. Pages can be named by number or label ("on page 2", "the Back page").
 - **Undo** reverts Claude's last edit, and Claude is told about it. **Enter** sends, **Shift+Enter** adds a line.
+- If the chat cannot start, Inkscape shows why. Its output goes to `chat.log` next to the config file
+  (`~/.config/inkscape-claude/chat.log`, Windows: `%APPDATA%\inkscape-claude\chat.log`).
 - The window uses GTK 3, which the Python bundled with Inkscape already has on Windows and macOS. Where GTK
   is missing, the chat opens in your browser instead.
 - The browser page (`--ui browser`) only listens on 127.0.0.1 and needs a random token from the link it opens,
