@@ -54,6 +54,7 @@ class ChatSession:
         self.agent = self.make_agent(client, backend)
         self.transcript: list[dict] = []
         self.notes: list[str] = []
+        self.focus: list[str] = []
         self.lock = threading.Lock()
 
     @classmethod
@@ -163,6 +164,8 @@ class ChatSession:
                      "selection": selection}
             self.transcript.append(entry)
 
+            self.focus = selection
+
             return {**entry, "preview": self.preview()}
 
     def undo(self) -> dict:
@@ -178,7 +181,10 @@ class ChatSession:
             return {"text": "Undid the last change.", "preview": self.preview()}
 
     def preview(self) -> str:
-        return base64.b64encode(self.operations.preview(self.path, 600)).decode("ascii")
+        """The whole drawing, or the area around the objects that were selected for the last message."""
+        png = self.operations.preview(self.path, 600, focus=self.focus or None)
+
+        return base64.b64encode(png).decode("ascii")
 
     @staticmethod
     def selection_note(selection: list[str]) -> str:

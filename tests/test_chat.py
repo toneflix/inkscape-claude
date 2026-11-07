@@ -165,7 +165,9 @@ def test_the_selection_in_inkscape_is_sent_with_the_message(tmp_path):
     assert client.calls[0][0]["content"][-1]["text"].startswith("(Selected in Inkscape: a, b.")
     assert "data-claude-selected" not in path.read_text()
     assert live.reloads == 1
+    assert session.focus == ["a", "b"], "the preview zooms to the selection"
 
     live.selected = []
     assert session.send("Hi")["selection"] == []
+    assert session.focus == []
     assert client.calls[1][-1]["content"][-1]["text"] == "Hi"
