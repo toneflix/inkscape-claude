@@ -1,5 +1,6 @@
 #!/bin/sh
-# Copies the extension into the signed-in user's Inkscape and puts inkscape-mcp on PATH.
+# Copies the extension into the signed-in user's Inkscape and puts inkscape-mcp on PATH. When Homebrew's
+# dbus is installed, also starts a D-Bus session bus at login so Claude can follow your own Inkscape windows.
 
 set -eu
 
@@ -19,5 +20,9 @@ sudo -u "$user" cp -R "$APP_DIR/extension/claude" "$extensions/claude"
 
 mkdir -p /usr/local/bin
 ln -sf "$APP_DIR/bin/inkscape-mcp" /usr/local/bin/inkscape-mcp
+
+if [ -x /opt/homebrew/bin/dbus-daemon ] || [ -x /usr/local/bin/dbus-daemon ]; then
+    launchctl asuser "$(id -u "$user")" sudo -u "$user" HOME="$home" sh "$APP_DIR/macos-dbus.sh" install || true
+fi
 
 exit 0

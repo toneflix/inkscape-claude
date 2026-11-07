@@ -141,7 +141,8 @@ How Claude reaches the window depends on the system:
     sh scripts/macos-dbus.sh          # starts a bus at login and tells apps opened from Finder where it is
     sh scripts/macos-dbus.sh status   # says whether Inkscape is on the bus
     ```
-    `brew services start dbus` is not enough: GLib, which Inkscape uses, only finds a bus on macOS through
+    The macOS installer runs this step for you when Homebrew's dbus is already installed (install it first,
+    then run the installer). `brew services start dbus` is not enough: GLib, which Inkscape uses, only finds a bus on macOS through
     `DBUS_SESSION_BUS_ADDRESS`, which the script sets for apps with `launchctl setenv`. Undo it with
     `sh scripts/macos-dbus.sh remove`.
 - **Shell** (the fallback, or `INKSCAPE_MCP_LIVE=shell`): when no Inkscape answers on D-Bus, Claude opens the
