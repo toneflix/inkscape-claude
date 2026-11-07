@@ -16,6 +16,7 @@ except (ImportError, ValueError):
     Gtk = None
 
 from .chat import EXPECTED_ERRORS, ChatSession
+from .claude import EFFORTS, ClaudeError, Config
 
 STYLE = b"""
 .bubble { padding: 8px 10px; border-radius: 8px; }
@@ -28,6 +29,63 @@ STYLE = b"""
 """
 
 PREVIEW_WIDTH = 340
+
+EFFORT_LABELS = {"low": "Low (fastest)", "medium": "Medium (default)", "high": "High", "xhigh": "Extra high",
+                 "max": "Max (slowest)"}
+
+
+class SettingsDialog:
+    """Model, effort and API key, saved to the config file that Ask Claude also reads."""
+
+    def __init__(self, parent, session: ChatSession):
+        self.session = session
+        self.dialog = Gtk.Dialog(title="Claude settings", transient_for=parent, modal=True)
+        self.dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
+        self.dialog.set_default_response(Gtk.ResponseType.OK)
+
+        self.model = Gtk.Entry(text=session.client.model, hexpand=True, activates_default=True)
+        self.effort = Gtk.ComboBoxText()
+        for effort in EFFORTS:
+            self.effort.append(effort, EFFORT_LABELS[effort])
+        self.effort.set_active_id(session.client.effort)
+        self.api_key = Gtk.Entry(visibility=False, activates_default=True,
+                                 placeholder_text="Key in use; type to replace" if session.client.api_key
+                                 else "sk-ant-...")
+
+        note = Gtk.Label(xalign=0, wrap=True, max_width_chars=48,
+                         label=f"Saved in {Config.path()}, which Ask Claude also uses. "
+                               "Get a key from platform.claude.com.")
+        note.get_style_context().add_class("steps")
+
+        grid = Gtk.Grid(row_spacing=8, column_spacing=10, margin=12)
+        for row, (text, widget) in enumerate((("Model", self.model), ("Effort", self.effort),
+                                              ("API key", self.api_key))):
+            grid.attach(Gtk.Label(label=text, xalign=0), 0, row, 1, 1)
+            grid.attach(widget, 1, row, 1, 1)
+        grid.attach(note, 0, 3, 2, 1)
+        self.dialog.get_content_area().add(grid)
+
+    def run(self) -> bool:
+        self.dialog.show_all()
+        if not self.session.client.api_key:
+            self.api_key.grab_focus()
+        saved = self.dialog.run() == Gtk.ResponseType.OK
+        if saved:
+            self.save()
+        self.dialog.destroy()
+
+        return saved
+
+    def save(self) -> None:
+        model = self.model.get_text().strip()
+        effort = self.effort.get_active_id() or "medium"
+        api_key = self.api_key.get_text().strip()
+
+        self.session.configure(model, effort, api_key or None)
+        values = {"model": self.session.client.model, "effort": self.session.client.effort}
+        if api_key:
+            values["api_key"] = api_key
+        Config.save(**values)
 
 
 class ChatWindow:
@@ -46,6 +104,13 @@ class ChatWindow:
 
         self.badge = Gtk.Label(xalign=0)
         self.badge.get_style_context().add_class("badge")
+        settings_button = Gtk.Button(label="Settings")
+        settings_button.set_tooltip_text("Model, effort and API key")
+        settings_button.set_relief(Gtk.ReliefStyle.NONE)
+        settings_button.connect("clicked", lambda *_: self.open_settings())
+        header = Gtk.Box(spacing=6)
+        header.pack_start(self.badge, True, True, 0)
+        header.pack_end(settings_button, False, False, 0)
 
         self.messages = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
         self.scroller = Gtk.ScrolledWindow(vexpand=True)
@@ -73,7 +138,7 @@ class ChatWindow:
         actions.pack_end(self.undo_button, False, False, 0)
 
         layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
-        layout.pack_start(self.badge, False, False, 0)
+        layout.pack_start(header, False, False, 0)
         layout.pack_start(self.scroller, True, True, 0)
         layout.pack_start(prompt_frame, False, False, 0)
         layout.pack_start(actions, False, False, 0)
@@ -83,6 +148,8 @@ class ChatWindow:
         self.add_message("system", "Ask for a change to the drawing. Enter sends, Shift+Enter adds a line.")
         self.refresh_badge()
         GLib.timeout_add_seconds(2, self.watch_inkscape)
+        if not session.client.api_key:
+            GLib.idle_add(self.ask_for_key)
 
     @staticmethod
     def supported() -> bool:
@@ -97,6 +164,20 @@ class ChatWindow:
         chat.window.show_all()
         chat.prompt.grab_focus()
         Gtk.main()
+
+    def open_settings(self) -> bool:
+        try:
+            if SettingsDialog(self.window, self.session).run():
+                self.add_message("system", f"Using {self.session.client.model} at {self.session.client.effort} effort.")
+        except (OSError, ClaudeError) as exc:
+            self.add_message("system", f"Error: could not save the settings: {exc}")
+
+        return False
+
+    def ask_for_key(self) -> bool:
+        self.add_message("system", "Add your Claude API key in Settings to start.")
+
+        return self.open_settings()
 
     def on_key(self, _widget, event) -> bool:
         if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not event.state & Gdk.ModifierType.SHIFT_MASK:
