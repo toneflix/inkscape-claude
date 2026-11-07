@@ -1,8 +1,8 @@
 name: Installers
 
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -51,9 +51,11 @@ jobs:
 
       - name: Build installer
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          version="${GITHUB_REF_NAME}"
-          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+          version="${RELEASE_TAG}"
+          if [ -z "$version" ]; then
             version="$(python -c "import tomllib; print(tomllib.load(open('mcp_server/pyproject.toml', 'rb'))['project']['version'])")-dev.${GITHUB_RUN_NUMBER}"
           fi
           python scripts/build_installer.py --version "$version"
@@ -65,9 +67,9 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish release
+    name: Attach to release
     needs: build
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -88,7 +90,8 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Create GitHub release
+      - name: Upload installers to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber

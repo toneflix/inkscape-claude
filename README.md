@@ -32,8 +32,10 @@ and macOS blocks the first open (**System Settings > Privacy & Security > Open A
 
 Then connect the MCP server to Claude, for example `claude mcp add inkscape -- inkscape-mcp` (see below).
 
-Releases are built by `.github/workflows/installers.yml` when a `v*` tag is pushed, for example
-`git tag v0.1.0 && git push origin v0.1.0`. To build the installer for your own system:
+`.github/workflows/installers.yml` builds the installers and attaches them to a release when it is published
+on GitHub (**Releases > Draft a new release**, pick or create a tag such as `v0.1.0`, **Publish**). Running the
+workflow by hand from the Actions tab builds them as downloadable artifacts without a release. To build the
+installer for your own system:
 
 ```bash
 pip install pyinstaller ./mcp_server       # Windows also needs Inno Setup 6
