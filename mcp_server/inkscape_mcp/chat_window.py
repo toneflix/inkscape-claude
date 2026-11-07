@@ -157,6 +157,8 @@ class ChatWindow:
 
         self.was_live = session.live_enabled
         self.add_message("system", "Ask for a change to the drawing. Enter sends, Shift+Enter adds a line.")
+        for entry in session.transcript:
+            self.add_message(entry["role"], entry["text"], entry.get("steps"))
         if session.backend == "claude-code":
             self.add_message("system", self.describe_settings())
         self.refresh_badge()

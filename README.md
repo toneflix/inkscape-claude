@@ -103,12 +103,20 @@ The usual loop for bigger edits is `live_save`, edit the file with the normal to
 
 How Claude reaches the window depends on the system:
 
-- **Linux**: Inkscape publishes its actions on the session D-Bus, so Claude can follow any window, including
-  one you opened yourself. This needs the `gdbus` command (part of GLib, installed on most desktops).
-- **macOS and Windows** (or `INKSCAPE_MCP_LIVE=shell` anywhere): there is no D-Bus, so Claude opens the
+- **D-Bus**: Inkscape publishes its actions on the session D-Bus wherever one is running, so Claude can follow
+  any window, including one you opened yourself. Claude talks to it with the `gdbus` command.
+  - Linux: works out of the box on most desktops (`gdbus` is part of GLib).
+  - Windows: Inkscape starts a session bus itself and ships `gdbus.exe` next to `inkscape.exe`, so it should
+    work with nothing to install.
+  - macOS: install D-Bus and GLib with Homebrew, start the bus, then start Inkscape:
+    `brew install dbus glib && brew services start dbus`.
+- **Shell** (the fallback, or `INKSCAPE_MCP_LIVE=shell`): when no Inkscape answers on D-Bus, Claude opens the
   document itself with `live_open`. That starts Inkscape with its interactive shell attached, which Claude
   uses to run actions, save and reload. Work in that window. It is saved and closed when the MCP server
   stops. Reloading needs Inkscape 1.3 or later; on older versions use File > Revert.
+
+D-Bus on macOS and Windows has been checked against Inkscape's source and tested on Linux with the same code
+path, but not yet on a Mac or Windows machine.
 
 ### Settings (environment variables)
 
@@ -118,7 +126,7 @@ How Claude reaches the window depends on the system:
 | `INKSCAPE_MCP_ALLOW_ANY_PATH` | off | Set to `1` to allow any path on disk. |
 | `INKSCAPE_BIN` | auto-detect | Path to the Inkscape executable. |
 | `INKSCAPE_TIMEOUT` | `120` | Seconds before an Inkscape run is stopped. |
-| `INKSCAPE_MCP_LIVE` | auto | `dbus` or `shell` to choose how live control reaches Inkscape (default: D-Bus on Linux, shell elsewhere). |
+| `INKSCAPE_MCP_LIVE` | auto | `dbus` or `shell` to choose how live control reaches Inkscape (default: D-Bus when Inkscape answers on it, which is always tried on Linux; otherwise the shell). |
 
 ## 2. "Ask Claude…" extension
 
@@ -174,8 +182,8 @@ Inkscape's bundled Python on Windows and macOS usually does not have extra packa
   one-shot. The chat window avoids this: it runs outside Inkscape and keeps the conversation going.
 - *Selection only* replaces the selected objects in place. If they sit in different groups or layers,
   the result goes where the first one was.
-- On macOS and Windows, Claude can only follow an Inkscape window that it opened itself (`live_open`, or
-  the chat window); a window you opened yourself needs File > Revert to show changes made on disk.
+- Without D-Bus (see Live control), Claude can only follow an Inkscape window that it opened itself
+  (`live_open`, or the chat window); a window you opened yourself needs File > Revert to show changes.
 
 ## 3. Chat window
 
@@ -195,9 +203,9 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
 
 - The chat keeps the Inkscape window in sync: before each message it saves the drawing, so Claude sees your
   latest changes, and afterwards it reloads the window to show Claude's edits.
-- On Linux that is the window you already have open. On macOS and Windows the chat opens the drawing in its
-  own Inkscape window (started from Inkscape, close the original one so you don't edit two copies). The
-  chat stops when you close that window, and saves and closes the window when you stop the chat.
+- With D-Bus (see Live control) that is the window you already have open. Without it, the chat opens the
+  drawing in its own Inkscape window and says so (started from Inkscape, close the original one so you don't
+  edit two copies). The chat stops when you close that window, and saves and closes it when you stop the chat.
 - **Settings** in the chat window holds how to reach Claude, the model, effort and API key. They are saved in
   the config file above, so Ask Claude uses the same key, and changes apply from the next message.
 - Whatever you have selected in the Inkscape window goes with your message, so "make these blue" works. The
@@ -207,8 +215,8 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
   is missing, the chat opens in your browser instead.
 - The browser page (`--ui browser`) only listens on 127.0.0.1 and needs a random token from the link it opens,
   so other websites cannot send it messages.
-- Options: `--ui app|browser`, `--backend api|claude-code`, `--model`, `--effort`, `--attach` (the file is already open in Inkscape; Linux
-  only), `--window N`, `--no-live`, and for the browser page `--no-browser`, `--port`, `--idle-minutes`.
+- Options: `--ui app|browser`, `--backend api|claude-code`, `--model`, `--effort`, `--attach` (the file is already open in Inkscape; needs
+  D-Bus), `--window N`, `--no-live`, and for the browser page `--no-browser`, `--port`, `--idle-minutes`.
 
 ### Use your Claude subscription (Claude Code)
 

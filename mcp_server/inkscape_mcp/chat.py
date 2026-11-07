@@ -71,13 +71,24 @@ class ChatSession:
         inkscape = Inkscape.from_env()
         live = None if args.no_live else live_control(inkscape)
         window = args.window
+        notice = None
         if live is not None and (isinstance(live, ShellInkscape) or not args.attach) and window is None:
             try:
                 window = live.open(document)
             except LiveError as exc:
-                print(f"Could not open an Inkscape window to keep in sync: {exc}", flush=True)
+                notice = f"Could not open an Inkscape window to keep in sync: {exc}"
+            else:
+                if args.attach and isinstance(live, ShellInkscape):
+                    notice = ("Your Inkscape window could not be reached over D-Bus, so the chat opened the drawing "
+                              "in a new window that it keeps in sync. Work in that one and close the other, so you "
+                              "don't edit two copies.")
 
-        return cls(document, client, inkscape, live, window, backend, settings["claude_path"])
+        session = cls(document, client, inkscape, live, window, backend, settings["claude_path"])
+        if notice:
+            print(notice, flush=True)
+            session.transcript.append({"role": "system", "text": notice})
+
+        return session
 
     @staticmethod
     def default_backend(api_key: str, claude_path: str | None = None) -> str:
@@ -306,8 +317,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-browser", action="store_true", help="browser page: print the link instead of opening it")
     parser.add_argument("--no-live", action="store_true", help="do not open or sync an Inkscape window")
     parser.add_argument("--attach", action="store_true",
-                        help="the document is already open in Inkscape; sync with the newest window (Linux only; "
-                             "elsewhere the chat opens its own window)")
+                        help="the document is already open in Inkscape; sync with the newest window (needs D-Bus; "
+                             "without it the chat opens its own window)")
     parser.add_argument("--window", type=int, help="Inkscape window number to sync with")
     parser.add_argument("--idle-minutes", type=float, help="browser page: stop after this many minutes without use")
 
