@@ -22,7 +22,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 from .agent import DrawingAgent
-from .claude import DEFAULT_MODEL, ClaudeClient, ClaudeError, Config
+from .claude import DEFAULT_MODEL, EFFORTS, ClaudeClient, ClaudeError, Config
 from .cli import Inkscape, InkscapeError
 from .live import LiveError, LiveInkscape
 from .operations import DocumentOperations
@@ -57,7 +57,9 @@ class ChatSession:
         if not document.exists():
             raise ValueError(f"{document} does not exist.")
 
-        client = ClaudeClient.create(Config.api_key(), model=args.model, effort=args.effort)
+        settings = Config.chat_settings()
+        client = ClaudeClient.create(Config.find_api_key(), model=args.model or settings["model"],
+                                     effort=args.effort or settings["effort"])
         inkscape = Inkscape.from_env()
         live = None if args.no_live else live_control(inkscape)
         window = args.window
@@ -72,6 +74,17 @@ class ChatSession:
     @property
     def live_enabled(self) -> bool:
         return self.live is not None and self.live.available()
+
+    @property
+    def client(self) -> ClaudeClient:
+        return self.agent.client
+
+    def configure(self, model: str, effort: str, api_key: str | None = None) -> None:
+        """Changes the model and effort for the next messages, and the API key if one is given."""
+        self.client.model = model.strip() or DEFAULT_MODEL
+        self.client.effort = effort if effort in EFFORTS else "medium"
+        if api_key:
+            self.client.api_key = api_key.strip()
 
     @property
     def owns_window(self) -> bool:
@@ -89,6 +102,9 @@ class ChatSession:
         text = text.strip()
         if not text:
             raise ValueError("Type a message first.")
+
+        if not self.client.api_key:
+            raise ClaudeError("Add your Claude API key in Settings first, or set ANTHROPIC_API_KEY.")
 
         with self.lock:
             self.sync_from_inkscape()
@@ -225,8 +241,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ui", choices=["app", "browser"], default="app",
                         help="a desktop chat window (default; needs GTK 3) or a page in your browser")
     parser.add_argument("--port", type=int, default=0, help="browser page: port to listen on (default: any free port)")
-    parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
+    parser.add_argument("--model", help=f"default: the saved setting, or {DEFAULT_MODEL}")
+    parser.add_argument("--effort", choices=EFFORTS, help="default: the saved setting, or medium")
     parser.add_argument("--no-browser", action="store_true", help="browser page: print the link instead of opening it")
     parser.add_argument("--no-live", action="store_true", help="do not open or sync an Inkscape window")
     parser.add_argument("--attach", action="store_true",

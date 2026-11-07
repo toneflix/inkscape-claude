@@ -16,6 +16,7 @@ from pathlib import Path
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 KEY_REJECTED = "The API key was rejected. Check the key you configured."
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 class ClaudeError(RuntimeError):
@@ -23,7 +24,8 @@ class ClaudeError(RuntimeError):
 
 
 class Config:
-    """API key lookup: explicit value, then ANTHROPIC_API_KEY, then the config file."""
+    """Settings shared by the extension and the chat: the API key (explicit value, then ANTHROPIC_API_KEY, then
+    the config file), and the chat's model and effort."""
 
     @staticmethod
     def path() -> Path:
@@ -44,13 +46,35 @@ class Config:
             raise ClaudeError(f"Could not read {path}: {exc}") from exc
 
     @classmethod
-    def api_key(cls, explicit: str | None = None) -> str:
+    def save(cls, **values: str) -> None:
+        """Merges values into the config file, which only the current user can read."""
+        path = cls.path()
+        data = {**cls.load(), **values}
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        path.chmod(0o600)
+
+    @classmethod
+    def chat_settings(cls) -> dict[str, str]:
+        data = cls.load()
+        effort = data.get("effort") if data.get("effort") in EFFORTS else "medium"
+
+        return {"model": data.get("model") or DEFAULT_MODEL, "effort": effort}
+
+    @classmethod
+    def find_api_key(cls, explicit: str | None = None) -> str:
         key = (explicit or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
-        key = key or cls.load().get("api_key", "")
+
+        return key or cls.load().get("api_key", "")
+
+    @classmethod
+    def api_key(cls, explicit: str | None = None) -> str:
+        key = cls.find_api_key(explicit)
         if not key:
             raise ClaudeError(
-                "No Claude API key found. Set it in the extension's Settings tab, in the ANTHROPIC_API_KEY "
-                f"environment variable, or in {cls.path()} as {{\"api_key\": \"sk-ant-...\"}}."
+                "No Claude API key found. Set it in the chat's Settings, the extension's Settings tab, the "
+                f"ANTHROPIC_API_KEY environment variable, or {cls.path()} as {{\"api_key\": \"sk-ant-...\"}}."
             )
 
         return key
