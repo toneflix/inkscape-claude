@@ -1,10 +1,12 @@
 """Live control of a running Inkscape 1.x window through its D-Bus actions.
 
 Inkscape publishes its actions on the session bus wherever GLib finds one: always on Linux, on Windows through
-the gdbus.exe that ships with Inkscape, and on macOS when D-Bus is installed (e.g. Homebrew's dbus)."""
+the gdbus.exe that ships with Inkscape, and on macOS once scripts/macos-dbus.sh runs a bus and sets
+DBUS_SESSION_BUS_ADDRESS for apps (GLib does not use Homebrew's launchd bus)."""
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -18,6 +20,7 @@ BUS_NAME = "org.inkscape.Inkscape"
 APP_PATH = "/org/inkscape/Inkscape"
 ACTIONS_INTERFACE = "org.gtk.Actions"
 TARGETS = ("app", "window", "document")
+MACOS_BUS = "/tmp/inkscape-claude-dbus-{uid}"
 
 
 class LiveError(RuntimeError):
@@ -88,7 +91,8 @@ class LiveInkscape:
     def require(self) -> None:
         if not self.gdbus:
             raise LiveError("The 'gdbus' command was not found. On Linux install your distribution's glib2 tools; "
-                            "on macOS run 'brew install glib dbus'. Or set INKSCAPE_MCP_LIVE=shell.")
+                            "on macOS run 'brew install glib dbus' and scripts/macos-dbus.sh. Or set "
+                            "INKSCAPE_MCP_LIVE=shell.")
         if not self.available():
             raise LiveError("No running Inkscape was found on the session D-Bus. Open Inkscape first, "
                             "or use live_open.")
@@ -221,6 +225,19 @@ class LiveInkscape:
 
         raise LiveError(f"Inkscape did not export {output} in time.")
 
+    @staticmethod
+    def environment() -> dict[str, str] | None:
+        """On macOS, points gdbus at the bus from scripts/macos-dbus.sh when this process started without its
+        address, e.g. an MCP server started before the bus."""
+        if sys.platform != "darwin" or os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+            return None
+
+        socket = Path(MACOS_BUS.format(uid=os.getuid()))
+        if not socket.exists():
+            return None
+
+        return {**os.environ, "DBUS_SESSION_BUS_ADDRESS": f"unix:path={socket}"}
+
     def _call(self, method: str, path: str, *args: str) -> str:
         if not self.gdbus:
             raise LiveError("The 'gdbus' command was not found.")
@@ -230,7 +247,7 @@ class LiveInkscape:
 
         try:
             proc = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout,
-                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                  env=self.environment(), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except subprocess.TimeoutExpired as exc:
             raise LiveError("Inkscape did not answer over D-Bus in time. A dialog may be open in its window.") from exc
         except OSError as exc:

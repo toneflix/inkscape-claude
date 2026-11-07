@@ -176,3 +176,21 @@ def test_actions_with_separators_are_refused():
 
     with pytest.raises(LiveError, match="';'"):
         window.send(["select-all;delete"])
+
+
+def test_macos_finds_the_bus_from_the_setup_script(tmp_path, monkeypatch):
+    import inkscape_mcp.live as live_module
+
+    socket = tmp_path / "bus-{uid}"
+    monkeypatch.setattr(live_module, "MACOS_BUS", str(socket))
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    assert LiveInkscape.environment() is None, "no bus socket yet"
+
+    Path(str(socket).format(uid=os.getuid())).write_text("")
+
+    assert LiveInkscape.environment()["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={str(socket).format(uid=os.getuid())}"
+
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/elsewhere")
+    assert LiveInkscape.environment() is None, "an address the process already has wins"
