@@ -200,7 +200,7 @@ class ChatSession:
             self.live.run([f"object-set-attribute:{SELECTION_MARK},1"], self.window)
         except LiveError:
             pass
-        self.live.save(self.window)
+        self.live.save(self.window, self.path)
 
         return self.take_selection()
 

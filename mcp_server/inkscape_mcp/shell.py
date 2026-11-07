@@ -172,7 +172,7 @@ class ShellInkscape:
 
         return output
 
-    def save(self, window: int | None = None) -> None:
+    def save(self, window: int | None = None, path: Path | None = None) -> None:
         target = self._window(window)
         self.export(target.path, "svg", window=window)
 
