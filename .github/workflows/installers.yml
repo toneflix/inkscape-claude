@@ -3,12 +3,6 @@ name: Installers
 on:
   push:
     tags: ["v*"]
-  pull_request:
-    paths:
-      - "installer/**"
-      - "scripts/build_installer.py"
-      - "scripts/package_extension.py"
-      - ".github/workflows/installers.yml"
   workflow_dispatch:
 
 permissions:
