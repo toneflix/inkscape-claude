@@ -15,8 +15,9 @@ def files():
         if path.suffix in (".inx", ".py"):
             yield path, Path("claude") / path.name
 
-    for path in sorted((ROOT / "mcp_server" / "inkscape_mcp").glob("*.py")):
-        yield path, Path("claude") / "inkscape_mcp" / path.name
+    for path in sorted((ROOT / "mcp_server" / "inkscape_mcp").iterdir()):
+        if path.suffix in (".py", ".html"):
+            yield path, Path("claude") / "inkscape_mcp" / path.name
 
 
 def main() -> None:

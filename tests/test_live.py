@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp_server"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from inkscape_mcp.cli import Inkscape  # noqa: E402
 from inkscape_mcp.live import LiveError, LiveInkscape, variant  # noqa: E402
@@ -84,3 +85,23 @@ def test_live_round_trip(running_inkscape, tmp_path):
 
     reloaded = SvgDocument.load(live.export(tmp_path / "reloaded.svg"))
     assert reloaded.find("r1").get("fill") == "purple"
+
+
+@pytest.mark.skipif(not CAN_RUN_LIVE, reason="needs Linux, a display, a session D-Bus and Inkscape")
+def test_chat_keeps_the_window_in_sync(running_inkscape, tmp_path):
+    from inkscape_mcp.chat import ChatSession
+    from test_agent import ScriptedClient, done, tool_call
+
+    live, document, window = running_inkscape
+    live.run(["select-by-id:c1", "object-flip-horizontal"], window)
+    client = ScriptedClient([tool_call("a", "update_element", element_id="r1", style={"fill": "orange"}),
+                             done("Made the square orange.")])
+    session = ChatSession(document, client, Inkscape(), live, window)
+
+    reply = session.send("Make the square orange")
+    time.sleep(1)
+
+    shown = SvgDocument.load(live.export(tmp_path / "shown.svg"))
+    assert reply["text"] == "Made the square orange."
+    assert "fill:orange" in shown.find("r1").get("style", ""), "window reloaded with Claude's edit"
+    assert shown.find("c1").get("transform"), "the unsaved flip was saved before Claude edited"

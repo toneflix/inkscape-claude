@@ -128,9 +128,12 @@ class LiveInkscape:
 
     def open(self, path: Path) -> int | None:
         """Open a file in the running Inkscape, or start Inkscape with it. Returns the new window number."""
-        before = set(self.windows()) if self.available() else set()
+        controllable = sys.platform.startswith("linux") and self.gdbus
+        before = set(self.windows()) if controllable and self.available() else set()
         subprocess.Popen([self.inkscape.binary, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
+        if not controllable:
+            return None
 
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:

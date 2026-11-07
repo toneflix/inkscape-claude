@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude for Inkscape</title>
+<style>
+  :root {
+    --bg: #f7f6f3;
+    --panel: #ffffff;
+    --text: #1f1e1c;
+    --muted: #6b6862;
+    --border: #e3e0da;
+    --accent: #b5532f;
+    --accent-text: #ffffff;
+    --user: #efe9df;
+    --error: #b42318;
+    --ok: #2e7d4f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1a18;
+      --panel: #242320;
+      --text: #ecebe8;
+      --muted: #a29f98;
+      --border: #3a3834;
+      --accent: #e07a52;
+      --accent-text: #1b1a18;
+      --user: #33302b;
+      --error: #f97066;
+      --ok: #6fcf97;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  #doc { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .badge { display: inline-block; margin-top: 4px; font-size: 12px; color: var(--muted); }
+  .badge::before { content: "●"; margin-right: 4px; color: var(--muted); }
+  .badge.on::before { color: var(--ok); }
+  main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 100%; padding: 10px 12px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .user { align-self: flex-end; background: var(--user); max-width: 85%; }
+  .assistant { background: var(--panel); border: 1px solid var(--border); }
+  .system { align-self: center; color: var(--muted); font-size: 12px; padding: 2px 8px; }
+  .system.error { color: var(--error); }
+  details { margin-top: 8px; color: var(--muted); font-size: 12px; white-space: normal; }
+  details li.failed { color: var(--error); }
+  details ul { margin: 6px 0 0; padding-left: 18px; }
+  .preview { display: block; margin-top: 10px; max-width: 100%; border: 1px solid var(--border); border-radius: 6px;
+             background: #fff; }
+  .empty { color: var(--muted); text-align: center; margin: auto; max-width: 280px; }
+  form { padding: 12px 16px; border-top: 1px solid var(--border); background: var(--panel); display: flex;
+         flex-direction: column; gap: 8px; }
+  textarea { width: 100%; min-height: 64px; resize: vertical; padding: 8px 10px; border-radius: 8px;
+             border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row .hint { flex: 1; color: var(--muted); font-size: 12px; }
+  button { border: 0; border-radius: 8px; padding: 8px 14px; font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  button:disabled { opacity: 0.5; cursor: default; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Claude for Inkscape</h1>
+  <div id="doc"></div>
+  <div id="live" class="badge"></div>
+</header>
+<main id="log">
+  <p class="empty" id="empty">Ask for a change, for example "add a soft drop shadow to the logo" or
+    "center everything on the page". Claude keeps the whole conversation in mind.</p>
+</main>
+<form id="form">
+  <textarea id="input" placeholder="What should Claude do?" autofocus></textarea>
+  <div class="row">
+    <span class="hint" id="hint">Enter to send, Shift+Enter for a new line</span>
+    <button type="button" class="secondary" id="undo">Undo</button>
+    <button type="submit" class="primary" id="send">Send</button>
+  </div>
+</form>
+<script>
+  const TOKEN = "{{TOKEN}}";
+  const log = document.getElementById("log");
+  const input = document.getElementById("input");
+  const hint = document.getElementById("hint");
+  const buttons = [document.getElementById("send"), document.getElementById("undo")];
+
+  async function api(path, body) {
+    const response = await fetch(path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "content-type": "application/json", "x-chat-token": TOKEN },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || response.statusText);
+    return data;
+  }
+
+  function add(entry, preview) {
+    document.getElementById("empty")?.remove();
+    const div = document.createElement("div");
+    div.className = `msg ${entry.role}` + (entry.text.startsWith("Error:") ? " error" : "");
+    div.textContent = entry.text;
+
+    if (entry.steps && entry.steps.length) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `${entry.steps.length} step${entry.steps.length === 1 ? "" : "s"}`;
+      const list = document.createElement("ul");
+      for (const step of entry.steps) {
+        const item = document.createElement("li");
+        item.textContent = `${step.tool}: ${step.summary}`;
+        if (step.failed) item.className = "failed";
+        list.append(item);
+      }
+      details.append(summary, list);
+      div.append(details);
+    }
+
+    if (preview) {
+      const img = document.createElement("img");
+      img.className = "preview";
+      img.alt = "Preview of the drawing";
+      img.src = `data:image/png;base64,${preview}`;
+      div.append(img);
+    }
+
+    log.append(div);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function busy(on, text) {
+    buttons.forEach((b) => (b.disabled = on));
+    hint.textContent = on ? text : "Enter to send, Shift+Enter for a new line";
+  }
+
+  async function run(path, body, waiting) {
+    busy(true, waiting);
+    try {
+      const result = await api(path, body);
+      add({ role: result.role || "system", text: result.text, steps: result.steps }, result.preview);
+    } catch (error) {
+      add({ role: "system", text: `Error: ${error.message}` });
+    } finally {
+      busy(false);
+      input.focus();
+    }
+  }
+
+  document.getElementById("form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    add({ role: "user", text });
+    run("/api/message", { text }, "Claude is working on the drawing…");
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      document.getElementById("form").requestSubmit();
+    }
+  });
+
+  document.getElementById("undo").addEventListener("click", () => run("/api/undo", {}, "Undoing…"));
+
+  api("/api/state").then((state) => {
+    document.getElementById("doc").textContent = state.document;
+    const live = document.getElementById("live");
+    live.className = state.live ? "badge on" : "badge";
+    live.textContent = state.live
+      ? "Synced with the open Inkscape window"
+      : "Not synced: use File > Revert in Inkscape to see changes";
+    state.transcript.forEach((entry) => add(entry));
+  });
+</script>
+</body>
+</html>

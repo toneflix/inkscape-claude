@@ -7,13 +7,17 @@ name = "inkscape-mcp"
 version = "0.1.0"
 description = "MCP server that lets Claude create, edit, preview and export Inkscape SVG documents"
 requires-python = ">=3.10"
-dependencies = ["mcp>=2.0", "lxml>=4.9"]
+dependencies = ["mcp>=2.0", "lxml>=4.9", "anthropic>=2.0"]
 
 [project.optional-dependencies]
 test = ["pytest"]
 
 [project.scripts]
 inkscape-mcp = "inkscape_mcp.server:main"
+inkscape-claude-chat = "inkscape_mcp.chat:main"
 
 [tool.setuptools]
 packages = ["inkscape_mcp"]
+
+[tool.setuptools.package-data]
+inkscape_mcp = ["*.html"]
