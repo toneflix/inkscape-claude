@@ -141,7 +141,8 @@ The zip holds a `claude/` folder with both menu items (Ask Claude and Open Claud
 
 Get a key from the [Claude Console](https://platform.claude.com/), then do one of:
 
-- paste it in the extension's **Settings** tab, or
+- paste it in the chat window's **Settings** (it asks on first start), or the Ask Claude extension's
+  **Settings** tab, or
 - set `ANTHROPIC_API_KEY` in the environment Inkscape starts from, or
 - create `~/.config/inkscape-claude/config.json` (Windows: `%APPDATA%\inkscape-claude\config.json`)
   containing `{"api_key": "sk-ant-..."}`.
@@ -184,8 +185,8 @@ page after each answer, and remembers what you asked before ("now make those sta
 
 ![The chat window next to Inkscape after Claude added stars to a badge](examples/chat-window.png)
 
-Start it from Inkscape with **Extensions > Claude > Open Claude Chat…** (save the drawing first), or from a
-terminal:
+Start it from Inkscape with **Extensions > Claude > Open Claude Chat** (save the drawing first; there is no
+dialog, the chat opens straight away), or from a terminal:
 
 ```bash
 inkscape-claude-chat drawing.svg               # opens the file in Inkscape and the chat window
@@ -197,6 +198,8 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
 - On Linux that is the window you already have open. On macOS and Windows the chat opens the drawing in its
   own Inkscape window (started from Inkscape, close the original one so you don't edit two copies). The
   chat stops when you close that window, and saves and closes the window when you stop the chat.
+- **Settings** in the chat window holds the model, effort and API key. They are saved in the config file
+  above, so Ask Claude uses the same key, and changes apply from the next message.
 - **Undo** reverts Claude's last edit, and Claude is told about it. **Enter** sends, **Shift+Enter** adds a line.
 - The window uses GTK 3, which the Python bundled with Inkscape already has on Windows and macOS. Where GTK
   is missing, the chat opens in your browser instead.

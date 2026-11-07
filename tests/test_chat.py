@@ -103,3 +103,25 @@ def test_errors_come_back_as_messages(chat):
     status, body = request(server, "/api/undo", {}, server.token)
 
     assert status == 400 and "Nothing to undo" in json.loads(body)["error"]
+
+
+def test_settings_apply_to_the_next_message_and_a_key_is_needed(tmp_path):
+    from inkscape_mcp.claude import ClaudeError
+
+    path = tmp_path / "drawing.svg"
+    SvgDocument.blank(100, 100).save(path)
+    client = ScriptedClient([done("Hi.")])
+    client.api_key = ""
+    session = ChatSession(path, client, Inkscape(), live=None)
+
+    with pytest.raises(ClaudeError, match="API key"):
+        session.send("Hello")
+
+    session.configure("claude-sonnet-5-5", "high", "sk-new")
+
+    assert (client.model, client.effort, client.api_key) == ("claude-sonnet-5-5", "high", "sk-new")
+    assert session.send("Hello")["text"] == "Hi."
+
+    session.configure("", "loud")
+
+    assert (client.model, client.effort, client.api_key) == ("claude-opus-5-5", "medium", "sk-new")

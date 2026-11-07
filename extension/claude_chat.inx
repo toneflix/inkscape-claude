@@ -1,24 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
-  <name>Open Claude Chat…</name>
+  <name>Open Claude Chat</name>
   <id>org.inkscape_claude.claude_chat</id>
 
-  <param name="tab" type="notebook">
-    <page name="chat" gui-text="Chat">
-      <label>Opens a chat window for this drawing. Claude edits the saved file and the Inkscape window reloads after each answer. On macOS and Windows the chat opens the drawing in a new Inkscape window that it keeps in sync.</label>
-      <label>Save the drawing first. Each message saves the drawing before Claude reads it.</label>
-      <param name="model" type="string" gui-text="Model:">claude-opus-5-5</param>
-      <param name="effort" type="optiongroup" appearance="combo" gui-text="Effort:">
-        <option value="medium">Medium (default)</option>
-        <option value="low">Low (fastest)</option>
-        <option value="high">High</option>
-        <option value="xhigh">Extra high (slowest)</option>
-      </param>
-      <param name="api_key" type="string" gui-text="API key (leave empty to use ANTHROPIC_API_KEY or the config file):"></param>
-    </page>
-  </param>
-
-  <effect needs-live-preview="false" needs-document="true">
+  <effect needs-live-preview="false" needs-document="true" implements-custom-gui="true">
     <object-type>all</object-type>
     <effects-menu>
       <submenu name="Claude"/>

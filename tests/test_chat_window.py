@@ -10,7 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp_server"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from inkscape_mcp.chat import ChatSession  # noqa: E402
-from inkscape_mcp.chat_window import ChatWindow  # noqa: E402
+from inkscape_mcp.chat_window import ChatWindow, SettingsDialog  # noqa: E402
+from inkscape_mcp.claude import Config  # noqa: E402
 from inkscape_mcp.cli import Inkscape  # noqa: E402
 from inkscape_mcp.svgdoc import SvgDocument  # noqa: E402
 from test_agent import ScriptedClient, done, tool_call  # noqa: E402
@@ -98,3 +99,24 @@ def test_undo_reverts_and_errors_show_in_the_chat(chat):
     wait_until_idle(window)
 
     assert texts(window)[-1] == "Error: Nothing to undo."
+
+
+def test_settings_are_saved_and_used(chat, tmp_path, monkeypatch):
+    import json
+
+    window, _ = chat
+    config = tmp_path / "config" / "config.json"
+    monkeypatch.setattr(Config, "path", staticmethod(lambda: config))
+
+    dialog = SettingsDialog(window.window, window.session)
+    dialog.model.set_text("claude-sonnet-5-5")
+    dialog.effort.set_active_id("low")
+    dialog.api_key.set_text("sk-ant-new")
+    dialog.save()
+    dialog.dialog.destroy()
+
+    client = window.session.client
+    assert (client.model, client.effort, client.api_key) == ("claude-sonnet-5-5", "low", "sk-ant-new")
+    assert json.loads(config.read_text()) == {"model": "claude-sonnet-5-5", "effort": "low", "api_key": "sk-ant-new"}
+    assert config.stat().st_mode & 0o777 == 0o600
+    assert Config.chat_settings() == {"model": "claude-sonnet-5-5", "effort": "low"}
