@@ -12,13 +12,14 @@ HISTORY_FOLDER = ".inkscape-claude-history"
 
 
 class History:
-    """Numbered snapshots of a file, kept next to it in a hidden folder."""
+    """Numbered snapshots of a file, kept in `root` or in a hidden folder next to the file."""
 
-    def __init__(self, limit: int = 25):
+    def __init__(self, limit: int = 25, root: Path | None = None):
         self.limit = limit
+        self.root = root
 
     def folder(self, path: Path) -> Path:
-        return path.parent / HISTORY_FOLDER / path.name
+        return (self.root or path.parent / HISTORY_FOLDER) / path.name
 
     def snapshots(self, path: Path) -> list[Path]:
         return sorted(self.folder(path).glob("*.svg"))

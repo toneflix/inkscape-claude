@@ -234,6 +234,7 @@ def test_inx_matches_script():
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            Check().assertInxIsGood("ask_claude.inx")
+            for inx in ("ask_claude.inx", "claude_chat.inx"):
+                Check().assertInxIsGood(inx)
     finally:
         os.chdir(cwd)

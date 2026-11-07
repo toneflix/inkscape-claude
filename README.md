@@ -1,12 +1,14 @@
 # Inkscape + Claude (prototype)
 
-Two ways for Claude to work with Inkscape 1.x:
+Three ways for Claude to work with Inkscape 1.x:
 
 1. **`inkscape-mcp`**: an MCP server. Claude (in Claude Desktop, Claude Code, or any MCP client) can
    create and edit SVG documents, look at a rendered preview, and run Inkscape for booleans, alignment,
    any other Inkscape action, and export to PNG/PDF/EPS.
 2. **Ask Claude…**: an Inkscape extension (`Extensions > Claude > Ask Claude…`). Type a prompt, and
    Claude edits the open drawing, only the selected objects, or adds new artwork. Ctrl+Z undoes it.
+3. **Chat panel**: a chat page next to Inkscape for a longer conversation about one drawing; on Linux the
+   Inkscape window updates after every answer.
 
 ![Demo badge drawn through the MCP server](examples/demo-badge.png)
 
@@ -19,7 +21,7 @@ Claude makes: create a page, add shapes, a path intersection, page alignment, th
 
 ```bash
 cd mcp_server
-pip install .            # needs Python 3.10+, installs `mcp` (2.x) and `lxml`
+pip install .            # needs Python 3.10+; installs `mcp` (2.x), `lxml`, `anthropic` and both commands
 ```
 
 Inkscape 1.x must be installed for previews, exports and actions. The server finds it on `PATH`,
@@ -104,8 +106,8 @@ Build the package and unzip it into your Inkscape user extensions folder, then r
 python scripts/package_extension.py     # writes dist/ask-claude-extension.zip
 ```
 
-The zip holds a `claude/` folder with the extension and the `inkscape_mcp` code it shares with the MCP
-server. Find the extensions folder in **Edit > Preferences > System > User extensions**. Typical locations:
+The zip holds a `claude/` folder with both menu items (Ask Claude and Open Claude Chat) and the
+`inkscape_mcp` code they share with the MCP server. Find the extensions folder in **Edit > Preferences > System > User extensions**. Typical locations:
 
 - Linux: `~/.config/inkscape/extensions/`
 - macOS: `~/Library/Application Support/org.inkscape.Inkscape/config/inkscape/extensions/`
@@ -142,12 +144,36 @@ Inkscape's bundled Python on Windows and macOS usually does not have extra packa
 
 ### Limits of this first version
 
-- Inkscape freezes while the extension waits for Claude (often 10–60 seconds). Extensions in Inkscape
-  are one-shot, so there is no back-and-forth chat inside the canvas yet.
+- Inkscape freezes while Ask Claude waits for an answer (often 10–60 seconds), because extensions are
+  one-shot. The chat panel avoids this: it runs outside Inkscape and keeps the conversation going.
 - *Selection only* replaces the selected objects in place. If they sit in different groups or layers,
   the result goes where the first one was.
 - Live control of an open window works on Linux only. On macOS and Windows the MCP server works on files;
   use `open_in_inkscape`, or File > Revert in Inkscape, to see changes made on disk.
+
+## 3. Chat panel
+
+A conversation with Claude that keeps going across many edits, in a browser page you keep next to
+Inkscape. Claude edits the drawing step by step with the same tools as above, shows a preview after each
+answer, and remembers what you asked before ("now make those stars smaller").
+
+<img src="examples/chat-panel.png" alt="The chat panel after Claude added stars to the demo badge" width="360">
+
+Start it from Inkscape with **Extensions > Claude > Open Claude Chat…** (save the drawing first), or from a
+terminal:
+
+```bash
+inkscape-claude-chat drawing.svg       # opens the file in Inkscape and the chat in your browser
+```
+
+- On Linux the chat keeps the Inkscape window in sync: before each message it saves the drawing, so Claude
+  sees your latest changes, and afterwards it reloads the window to show Claude's edits. Elsewhere, use
+  File > Revert in Inkscape after an answer.
+- **Undo** reverts Claude's last edit, and Claude is told about it.
+- The page only listens on 127.0.0.1 and needs a random token from the link it opens, so other websites
+  cannot send it messages. Started from Inkscape, it stops after two hours without use.
+- Options: `--model`, `--effort`, `--attach` (the file is already open in Inkscape), `--window N`,
+  `--no-live`, `--no-browser`, `--port`, `--idle-minutes`.
 
 ## Tests
 
@@ -163,5 +189,7 @@ Tested with Inkscape 1.2.2, Python 3.13, `mcp` 2.3, `inkex` 1.4 and `anthropic` 
 
 ## Ideas for next steps
 
-- A docked chat panel: a small local server that the extension talks to, so the conversation keeps going
-  across several edits.
+- Run the chat panel inside Inkscape as a docked dialog once Inkscape's extension API allows it.
+- Pick the right window automatically when several drawings are open (today live sync uses the newest
+  window unless `--window` is given).
+- Compact long chat conversations so they stay fast and cheap.
