@@ -111,70 +111,28 @@ class TurnResult:
     steps: list[Step] = field(default_factory=list)
 
 
-class DrawingAgent:
-    """Runs a conversation in which Claude edits `path` through tools. Keeps history across turns."""
+def summary(content) -> str:
+    """One line describing a tool's result, for the chat's list of steps."""
+    if isinstance(content, str):
+        return content.splitlines()[0][:200] if content else ""
 
-    def __init__(self, client: ClaudeClient, operations: DocumentOperations, path: Path, max_steps: int = 40,
-                 on_step: Callable[[Step], None] | None = None, system: str = SYSTEM_PROMPT):
-        self.client = client
+    return "rendered a preview"
+
+
+class DrawingTools:
+    """The drawing tools in TOOLS, working on one file. Shared by the API agent and the Claude Code bridge."""
+
+    def __init__(self, operations: DocumentOperations, path: Path):
         self.operations = operations
         self.path = path
-        self.max_steps = max_steps
-        self.on_step = on_step
-        self.system = system
-        self.messages: list[dict] = []
 
-    def run(self, prompt: str, context: list[dict] | None = None) -> TurnResult:
-        self.messages.append({"role": "user", "content": [*(context or []), {"type": "text", "text": prompt}]})
-        steps: list[Step] = []
-
-        for number in range(1, self.max_steps + 2):
-            response = self.client.send(self.system, self.messages, TOOLS)
-            self.messages.append({"role": "assistant", "content": response["content"]})
-
-            if response.get("stop_reason") != "tool_use":
-                return TurnResult(self.client.finish(response), steps)
-            if number > self.max_steps:
-                skipped = [{"type": "tool_result", "tool_use_id": block["id"], "is_error": True,
-                            "content": "Not run: the step limit was reached."}
-                           for block in response["content"] if block.get("type") == "tool_use"]
-                self.messages.append({"role": "user", "content": skipped})
-                break
-
-            results = [self.execute(block, steps) for block in response["content"] if block.get("type") == "tool_use"]
-            if number == self.max_steps:
-                results.append({"type": "text", "text": "That was the last step allowed. Do not call more tools; "
-                                                        "summarize what you changed."})
-            self.messages.append({"role": "user", "content": results})
-
-        return TurnResult(f"Stopped after {self.max_steps} steps.", steps)
-
-    def execute(self, block: dict, steps: list[Step]) -> dict:
-        name = block.get("name", "")
+    def call(self, name: str, arguments: dict | None = None) -> str | list[dict]:
+        """Runs a tool and returns its text, or image blocks for render_preview. Raises EXPECTED_ERRORS on failure."""
         handler = getattr(self, f"tool_{name}", None)
+        if handler is None:
+            raise ValueError(f"Unknown tool '{name}'.")
 
-        try:
-            if handler is None:
-                raise ValueError(f"Unknown tool '{name}'.")
-            content = handler(**(block.get("input") or {}))
-            step = Step(name, self._summary(content))
-            result = {"type": "tool_result", "tool_use_id": block["id"], "content": content}
-        except EXPECTED_ERRORS as exc:
-            step = Step(name, str(exc), failed=True)
-            result = {"type": "tool_result", "tool_use_id": block["id"], "content": str(exc), "is_error": True}
-
-        steps.append(step)
-        if self.on_step:
-            self.on_step(step)
-
-        return result
-
-    @staticmethod
-    def _summary(content) -> str:
-        if isinstance(content, str):
-            return content.splitlines()[0][:200] if content else ""
-
-        return "rendered a preview"
+        return handler(**(arguments or {}))
 
     def tool_get_outline(self, with_bboxes: bool = False) -> str:
         return self.operations.outline(self.path, with_bboxes)
@@ -249,3 +207,57 @@ class DrawingAgent:
 
         return "Nothing to undo." if remaining is None else "Reverted the last change."
 
+
+class DrawingAgent:
+    """Runs a conversation in which Claude edits `path` through tools. Keeps history across turns."""
+
+    def __init__(self, client: ClaudeClient, operations: DocumentOperations, path: Path, max_steps: int = 40,
+                 on_step: Callable[[Step], None] | None = None, system: str = SYSTEM_PROMPT):
+        self.client = client
+        self.tools = DrawingTools(operations, path)
+        self.max_steps = max_steps
+        self.on_step = on_step
+        self.system = system
+        self.messages: list[dict] = []
+
+    def run(self, prompt: str, context: list[dict] | None = None) -> TurnResult:
+        self.messages.append({"role": "user", "content": [*(context or []), {"type": "text", "text": prompt}]})
+        steps: list[Step] = []
+
+        for number in range(1, self.max_steps + 2):
+            response = self.client.send(self.system, self.messages, TOOLS)
+            self.messages.append({"role": "assistant", "content": response["content"]})
+
+            if response.get("stop_reason") != "tool_use":
+                return TurnResult(self.client.finish(response), steps)
+            if number > self.max_steps:
+                skipped = [{"type": "tool_result", "tool_use_id": block["id"], "is_error": True,
+                            "content": "Not run: the step limit was reached."}
+                           for block in response["content"] if block.get("type") == "tool_use"]
+                self.messages.append({"role": "user", "content": skipped})
+                break
+
+            results = [self.execute(block, steps) for block in response["content"] if block.get("type") == "tool_use"]
+            if number == self.max_steps:
+                results.append({"type": "text", "text": "That was the last step allowed. Do not call more tools; "
+                                                        "summarize what you changed."})
+            self.messages.append({"role": "user", "content": results})
+
+        return TurnResult(f"Stopped after {self.max_steps} steps.", steps)
+
+    def execute(self, block: dict, steps: list[Step]) -> dict:
+        name = block.get("name", "")
+
+        try:
+            content = self.tools.call(name, block.get("input"))
+            step = Step(name, summary(content))
+            result = {"type": "tool_result", "tool_use_id": block["id"], "content": content}
+        except EXPECTED_ERRORS as exc:
+            step = Step(name, str(exc), failed=True)
+            result = {"type": "tool_result", "tool_use_id": block["id"], "content": str(exc), "is_error": True}
+
+        steps.append(step)
+        if self.on_step:
+            self.on_step(step)
+
+        return result

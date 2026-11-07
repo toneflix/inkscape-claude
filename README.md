@@ -198,15 +198,30 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
 - On Linux that is the window you already have open. On macOS and Windows the chat opens the drawing in its
   own Inkscape window (started from Inkscape, close the original one so you don't edit two copies). The
   chat stops when you close that window, and saves and closes the window when you stop the chat.
-- **Settings** in the chat window holds the model, effort and API key. They are saved in the config file
-  above, so Ask Claude uses the same key, and changes apply from the next message.
+- **Settings** in the chat window holds how to reach Claude, the model, effort and API key. They are saved in
+  the config file above, so Ask Claude uses the same key, and changes apply from the next message.
 - **Undo** reverts Claude's last edit, and Claude is told about it. **Enter** sends, **Shift+Enter** adds a line.
 - The window uses GTK 3, which the Python bundled with Inkscape already has on Windows and macOS. Where GTK
   is missing, the chat opens in your browser instead.
 - The browser page (`--ui browser`) only listens on 127.0.0.1 and needs a random token from the link it opens,
   so other websites cannot send it messages.
-- Options: `--ui app|browser`, `--model`, `--effort`, `--attach` (the file is already open in Inkscape; Linux
+- Options: `--ui app|browser`, `--backend api|claude-code`, `--model`, `--effort`, `--attach` (the file is already open in Inkscape; Linux
   only), `--window N`, `--no-live`, and for the browser page `--no-browser`, `--port`, `--idle-minutes`.
+
+### Use your Claude subscription (Claude Code)
+
+The chat can run through [Claude Code](https://claude.com/claude-code) instead of an API key, so it uses the
+Pro or Max plan you signed in with:
+
+1. Install Claude Code and run `claude` once to sign in.
+2. In the chat's **Settings**, set **Connect with** to **Claude Code (your subscription)**. Without an API key
+   the chat picks this by itself when it finds `claude`.
+
+Each message runs `claude -p` with only the drawing tools above (no shell or file tools), served for this one
+drawing by a small built-in MCP server that needs nothing beyond Inkscape's own Python. Claude Code keeps the
+conversation between messages, and Undo works as before. `ANTHROPIC_API_KEY` is not passed on, so the
+subscription is what gets used. If the chat cannot find `claude` (apps started from a menu often have a short
+`PATH`), set `CLAUDE_CODE_BIN` or put `{"claude_path": "/path/to/claude"}` in the config file.
 
 ## Tests
 

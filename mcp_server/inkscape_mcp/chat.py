@@ -22,7 +22,8 @@ from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 from .agent import DrawingAgent
-from .claude import DEFAULT_MODEL, EFFORTS, ClaudeClient, ClaudeError, Config
+from .claude import BACKENDS, DEFAULT_MODEL, EFFORTS, ClaudeClient, ClaudeError, Config
+from .claude_code import ClaudeCode, ClaudeCodeAgent
 from .cli import Inkscape, InkscapeError
 from .live import LiveError, LiveInkscape
 from .operations import DocumentOperations
@@ -36,16 +37,20 @@ EXPECTED_ERRORS = (ClaudeError, InkscapeError, LiveError, SvgError, OSError, Val
 
 
 class ChatSession:
-    """One conversation about one SVG file, keeping an open Inkscape window in sync when it can."""
+    """One conversation about one SVG file, keeping an open Inkscape window in sync when it can. Claude is
+    reached with an API key (backend "api") or through the `claude` command (backend "claude-code")."""
 
     def __init__(self, path: Path, client: ClaudeClient, inkscape: Inkscape,
-                 live: LiveInkscape | ShellInkscape | None, window: int | None = None):
+                 live: LiveInkscape | ShellInkscape | None, window: int | None = None, backend: str = "api",
+                 claude_path: str | None = None):
         self.path = path
         self.live = live
         self.window = window
+        self.claude_path = claude_path
         self.history_dir = tempfile.TemporaryDirectory(prefix="inkscape-claude-chat-")
         self.operations = DocumentOperations(inkscape, History(root=Path(self.history_dir.name)))
-        self.agent = DrawingAgent(client, self.operations, path)
+        self.backend = backend
+        self.agent = self.make_agent(client, backend)
         self.transcript: list[dict] = []
         self.notes: list[str] = []
         self.lock = threading.Lock()
@@ -58,8 +63,10 @@ class ChatSession:
             raise ValueError(f"{document} does not exist.")
 
         settings = Config.chat_settings()
-        client = ClaudeClient.create(Config.find_api_key(), model=args.model or settings["model"],
+        api_key = Config.find_api_key()
+        client = ClaudeClient.create(api_key, model=args.model or settings["model"],
                                      effort=args.effort or settings["effort"])
+        backend = args.backend or settings["backend"] or cls.default_backend(api_key, settings["claude_path"])
         inkscape = Inkscape.from_env()
         live = None if args.no_live else live_control(inkscape)
         window = args.window
@@ -69,7 +76,18 @@ class ChatSession:
             except LiveError as exc:
                 print(f"Could not open an Inkscape window to keep in sync: {exc}", flush=True)
 
-        return cls(document, client, inkscape, live, window)
+        return cls(document, client, inkscape, live, window, backend, settings["claude_path"])
+
+    @staticmethod
+    def default_backend(api_key: str, claude_path: str | None = None) -> str:
+        """The API when a key is set, otherwise Claude Code when it is installed."""
+        return "claude-code" if not api_key and ClaudeCode.find(claude_path) else "api"
+
+    def make_agent(self, client: ClaudeClient, backend: str) -> DrawingAgent | ClaudeCodeAgent:
+        if backend == "claude-code":
+            return ClaudeCodeAgent(client, self.path, Path(self.history_dir.name), self.claude_path)
+
+        return DrawingAgent(client, self.operations, self.path)
 
     @property
     def live_enabled(self) -> bool:
@@ -79,12 +97,20 @@ class ChatSession:
     def client(self) -> ClaudeClient:
         return self.agent.client
 
-    def configure(self, model: str, effort: str, api_key: str | None = None) -> None:
-        """Changes the model and effort for the next messages, and the API key if one is given."""
+    @property
+    def needs_key(self) -> bool:
+        return self.backend == "api" and not self.client.api_key
+
+    def configure(self, model: str, effort: str, api_key: str | None = None, backend: str | None = None) -> None:
+        """Changes the model and effort for the next messages, and the API key and backend if given. A new
+        backend starts a new conversation."""
         self.client.model = model.strip() or DEFAULT_MODEL
         self.client.effort = effort if effort in EFFORTS else "medium"
         if api_key:
             self.client.api_key = api_key.strip()
+        if backend in BACKENDS and backend != self.backend:
+            self.backend = backend
+            self.agent = self.make_agent(self.client, backend)
 
     @property
     def owns_window(self) -> bool:
@@ -103,8 +129,9 @@ class ChatSession:
         if not text:
             raise ValueError("Type a message first.")
 
-        if not self.client.api_key:
-            raise ClaudeError("Add your Claude API key in Settings first, or set ANTHROPIC_API_KEY.")
+        if self.needs_key:
+            raise ClaudeError("Add your Claude API key in Settings first, set ANTHROPIC_API_KEY, or choose "
+                              "Claude Code in Settings to use your subscription.")
 
         with self.lock:
             self.sync_from_inkscape()
@@ -243,6 +270,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=0, help="browser page: port to listen on (default: any free port)")
     parser.add_argument("--model", help=f"default: the saved setting, or {DEFAULT_MODEL}")
     parser.add_argument("--effort", choices=EFFORTS, help="default: the saved setting, or medium")
+    parser.add_argument("--backend", choices=BACKENDS,
+                        help="api: your API key; claude-code: the `claude` command and its sign-in, e.g. a "
+                             "subscription (default: the saved setting, else api when a key is set)")
     parser.add_argument("--no-browser", action="store_true", help="browser page: print the link instead of opening it")
     parser.add_argument("--no-live", action="store_true", help="do not open or sync an Inkscape window")
     parser.add_argument("--attach", action="store_true",
