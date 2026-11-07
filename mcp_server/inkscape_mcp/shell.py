@@ -211,12 +211,14 @@ class ShellInkscape:
 
 
 def live_control(inkscape: Inkscape, mode: str | None = None) -> LiveInkscape | ShellInkscape:
-    """D-Bus on Linux, where it can follow windows the person opened; the shell everywhere else.
-    INKSCAPE_MCP_LIVE=dbus or shell picks one."""
+    """D-Bus, which can follow windows the person opened: on Linux always, and on macOS and Windows when a
+    running Inkscape answers on the bus. Otherwise the shell. INKSCAPE_MCP_LIVE=dbus or shell picks one."""
     mode = mode or os.environ.get("INKSCAPE_MCP_LIVE", "")
     dbus = LiveInkscape(inkscape)
 
-    if mode == "dbus" or (mode != "shell" and sys.platform.startswith("linux") and dbus.gdbus):
+    if mode == "dbus":
+        return dbus
+    if mode != "shell" and dbus.gdbus and (sys.platform.startswith("linux") or dbus.available()):
         return dbus
 
     return ShellInkscape(inkscape)

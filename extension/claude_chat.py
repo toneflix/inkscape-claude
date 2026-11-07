@@ -29,10 +29,6 @@ class ClaudeChat(inkex.EffectExtension):
         subprocess.Popen(command, env=env, cwd=str(HERE), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
 
-        if not sys.platform.startswith("linux"):
-            self.msg("The Claude chat opens the saved drawing in a new Inkscape window that it keeps in sync. "
-                     "Work in that window and close this one, so you don't edit two copies.")
-
 
 if __name__ == "__main__":
     ClaudeChat().run()

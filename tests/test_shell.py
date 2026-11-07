@@ -36,6 +36,43 @@ def test_live_control_choice():
     assert isinstance(live_control(Inkscape(), "dbus"), LiveInkscape)
 
 
+def test_macos_and_windows_use_dbus_when_inkscape_is_on_the_bus(monkeypatch):
+    monkeypatch.delenv("INKSCAPE_MCP_LIVE", raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(LiveInkscape, "find_gdbus", staticmethod(lambda inkscape: "/opt/homebrew/bin/gdbus"))
+
+    monkeypatch.setattr(LiveInkscape, "available", lambda self: True)
+    assert isinstance(live_control(Inkscape()), LiveInkscape)
+
+    monkeypatch.setattr(LiveInkscape, "available", lambda self: False)
+    assert isinstance(live_control(Inkscape()), ShellInkscape)
+
+    monkeypatch.setattr(LiveInkscape, "find_gdbus", staticmethod(lambda inkscape: None))
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert isinstance(live_control(Inkscape()), ShellInkscape)
+
+
+def test_gdbus_is_found_next_to_inkscape(tmp_path, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    (tmp_path / "inkscape.exe").write_text("")
+    (tmp_path / "gdbus.exe").write_text("")
+
+    assert LiveInkscape.find_gdbus(Inkscape(str(tmp_path / "inkscape.exe"))) == str(tmp_path / "gdbus.exe")
+
+
+def test_attaching_without_dbus_says_the_chat_opened_its_own_window(tmp_path, monkeypatch):
+    from inkscape_mcp import chat
+
+    document = tmp_path / "drawing.svg"
+    document.write_text(DOC)
+    monkeypatch.setattr(ShellInkscape, "open", lambda self, path: 1)
+    monkeypatch.setattr(chat, "live_control", lambda inkscape: ShellInkscape(inkscape))
+
+    session = chat.ChatSession.open(chat.parse_args([str(document), "--attach"]))
+
+    assert "opened the drawing in a new window" in session.transcript[0]["text"]
+
+
 def test_needs_a_window_opened_by_claude():
     live = ShellInkscape(Inkscape())
 

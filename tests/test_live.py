@@ -105,3 +105,19 @@ def test_chat_keeps_the_window_in_sync(running_inkscape, tmp_path):
     assert reply["text"] == "Made the square orange."
     assert "fill:orange" in shown.find("r1").get("style", ""), "window reloaded with Claude's edit"
     assert shown.find("c1").get("transform"), "the unsaved flip was saved before Claude edited"
+
+
+@pytest.mark.skipif(not CAN_RUN_LIVE, reason="needs Linux, a display, a session D-Bus and Inkscape")
+def test_other_systems_attach_over_dbus_when_inkscape_is_on_the_bus(running_inkscape, tmp_path, monkeypatch):
+    from inkscape_mcp.shell import live_control
+
+    live, document, window = running_inkscape
+    monkeypatch.delenv("INKSCAPE_MCP_LIVE", raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    chosen = live_control(Inkscape())
+    chosen.run(["select-by-id:c1", "delete-selection"], window)
+    chosen.save(window)
+
+    assert isinstance(chosen, LiveInkscape)
+    assert not SvgDocument.load(document).has("c1")

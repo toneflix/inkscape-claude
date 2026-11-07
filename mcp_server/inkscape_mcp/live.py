@@ -1,4 +1,7 @@
-"""Live control of a running Inkscape 1.x window through its D-Bus actions (Linux)."""
+"""Live control of a running Inkscape 1.x window through its D-Bus actions.
+
+Inkscape publishes its actions on the session bus wherever GLib finds one: always on Linux, on Windows through
+the gdbus.exe that ships with Inkscape, and on macOS when D-Bus is installed (e.g. Homebrew's dbus)."""
 
 from __future__ import annotations
 
@@ -50,12 +53,29 @@ class LiveInkscape:
 
     def __init__(self, inkscape: Inkscape, gdbus: str | None = None, timeout: float = 30):
         self.inkscape = inkscape
-        self.gdbus = gdbus or shutil.which("gdbus")
+        self.gdbus = gdbus or self.find_gdbus(inkscape)
         self.timeout = timeout
         self._actions: dict[str, set[str]] = {}
 
+    @staticmethod
+    def find_gdbus(inkscape: Inkscape) -> str | None:
+        """The gdbus command on PATH, next to Inkscape or its Python (Windows ships it there), or from Homebrew."""
+        found = shutil.which("gdbus")
+        if found:
+            return found
+
+        folders = [Path(sys.executable).parent]
+        try:
+            folders.insert(0, Path(inkscape.binary).resolve().parent)
+        except (OSError, RuntimeError):
+            pass
+        places = [folder / name for folder in folders for name in ("gdbus.exe", "gdbus")]
+        places += [Path("/opt/homebrew/bin/gdbus"), Path("/usr/local/bin/gdbus")]
+
+        return next((str(place) for place in places if place.is_file()), None)
+
     def available(self) -> bool:
-        if not sys.platform.startswith("linux") or not self.gdbus:
+        if not self.gdbus:
             return False
 
         try:
@@ -66,11 +86,9 @@ class LiveInkscape:
         return True
 
     def require(self) -> None:
-        if not sys.platform.startswith("linux"):
-            raise LiveError("Live control needs Linux (D-Bus). On macOS and Windows, edit the file and use "
-                            "File > Revert in Inkscape.")
         if not self.gdbus:
-            raise LiveError("The 'gdbus' command was not found. Install your distribution's glib2 tools.")
+            raise LiveError("The 'gdbus' command was not found. On Linux install your distribution's glib2 tools; "
+                            "on macOS run 'brew install glib dbus'. Or set INKSCAPE_MCP_LIVE=shell.")
         if not self.available():
             raise LiveError("No running Inkscape was found on the session D-Bus. Open Inkscape first, "
                             "or use live_open.")
@@ -128,7 +146,7 @@ class LiveInkscape:
 
     def open(self, path: Path) -> int | None:
         """Open a file in the running Inkscape, or start Inkscape with it. Returns the new window number."""
-        controllable = sys.platform.startswith("linux") and self.gdbus
+        controllable = bool(self.gdbus)
         before = set(self.windows()) if controllable and self.available() else set()
         subprocess.Popen([self.inkscape.binary, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
@@ -211,7 +229,8 @@ class LiveInkscape:
                    "--method", method, *args]
 
         try:
-            proc = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout)
+            proc = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout,
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except subprocess.TimeoutExpired as exc:
             raise LiveError("Inkscape did not answer over D-Bus in time. A dialog may be open in its window.") from exc
         except OSError as exc:
