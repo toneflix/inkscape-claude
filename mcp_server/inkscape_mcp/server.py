@@ -13,23 +13,16 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from .cli import Inkscape, InkscapeError
 from .live import LiveError, LiveInkscape
+from .operations import DocumentOperations
 from .svgdoc import SvgDocument, SvgError
 from .workspace import Workspace
-
-STYLE_ATTRIBUTES = ("style", "class", "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width",
-                    "stroke-opacity", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "opacity", "filter")
-
-BOOLEAN_ACTIONS = {"union": "path-union", "difference": "path-difference", "intersection": "path-intersection",
-                   "exclusion": "path-exclusion", "division": "path-division", "cut": "path-cut",
-                   "combine": "path-combine"}
-
-SINGLE_RESULT_OPERATIONS = {"union", "difference", "intersection", "exclusion", "combine"}
 
 EXPECTED_ERRORS = (ValueError, OSError, SvgError, InkscapeError, LiveError)
 
 workspace = Workspace.from_env()
 inkscape = Inkscape.from_env()
 live = LiveInkscape(inkscape)
+operations = DocumentOperations(inkscape, workspace.history)
 
 server = MCPServer(
     name="inkscape",
@@ -60,6 +53,14 @@ def tool(fn):
     server.tool()(wrapper)
 
     return wrapper
+
+
+def saved_message(summary: str, target: Path, log: str) -> str:
+    message = f"{summary}; saved {workspace.relative(target)}."
+    if log:
+        message += f"\nInkscape output:\n{log}"
+
+    return f"{message}\n\n{SvgDocument.load(target).outline()}"
 
 
 @tool
@@ -98,7 +99,7 @@ def create_document(path: str, width: float = 800, height: float = 600, units: s
         raise FileExistsError(f"'{workspace.relative(target)}' already exists. Pass overwrite=true to replace it.")
 
     doc = SvgDocument.parse(svg) if svg else SvgDocument.blank(width, height, units, background)
-    workspace.write(target, doc)
+    operations.write(target, doc)
 
     return f"Created {workspace.relative(target)}\n\n{doc.outline()}"
 
@@ -111,13 +112,10 @@ def read_document(path: str, mode: Literal["outline", "full"] = "outline", with_
     mode="full" returns the raw SVG source. with_bboxes adds Inkscape-measured bounding boxes.
     """
     source = workspace.resolve(path)
-    text = source.read_text(encoding="utf-8")
     if mode == "full":
-        return text
+        return source.read_text(encoding="utf-8")
 
-    bboxes = inkscape.query_all(source) if with_bboxes else None
-
-    return SvgDocument.parse(text).outline(bboxes=bboxes)
+    return operations.outline(source, with_bboxes)
 
 
 @tool
@@ -125,7 +123,7 @@ def write_document(path: str, svg: str) -> str:
     """Replace a whole document with new SVG source. The SVG is checked for valid XML first."""
     target = workspace.resolve(path, must_exist=False)
     doc = SvgDocument.parse(svg)
-    workspace.write(target, doc)
+    operations.write(target, doc)
 
     return f"Wrote {workspace.relative(target)}\n\n{doc.outline()}"
 
@@ -137,7 +135,8 @@ def add_elements(path: str, svg_fragment: str, parent_id: str | None = None, bef
     They go into `parent_id` (default: the top layer), at the end or just before `before_id`.
     Elements without ids get unique ones; the new ids are returned.
     """
-    target, ids = workspace.edit(path, lambda doc: doc.add(svg_fragment, parent_id, before_id))
+    target = workspace.resolve(path)
+    ids = operations.add(target, svg_fragment, parent_id, before_id)
 
     return f"Added to {workspace.relative(target)}: {', '.join(ids)}"
 
@@ -151,7 +150,8 @@ def update_element(path: str, element_id: str, attributes: dict[str, str | None]
     style: merged into the style attribute, e.g. {"fill": "#336699", "stroke-width": "2"}.
     text: new text content for <text>/<tspan> elements.
     """
-    target, _ = workspace.edit(path, lambda doc: doc.update(element_id, attributes, style, text))
+    target = workspace.resolve(path)
+    operations.update(target, element_id, attributes, style, text)
 
     return f"Updated '{element_id}' in {workspace.relative(target)}"
 
@@ -159,7 +159,8 @@ def update_element(path: str, element_id: str, attributes: dict[str, str | None]
 @tool
 def replace_element(path: str, element_id: str, svg_fragment: str) -> str:
     """Replace one element (and its children) with new SVG markup."""
-    target, ids = workspace.edit(path, lambda doc: doc.replace(element_id, svg_fragment))
+    target = workspace.resolve(path)
+    ids = operations.replace(target, element_id, svg_fragment)
 
     return f"Replaced '{element_id}' in {workspace.relative(target)} with: {', '.join(ids)}"
 
@@ -167,7 +168,8 @@ def replace_element(path: str, element_id: str, svg_fragment: str) -> str:
 @tool
 def delete_elements(path: str, element_ids: list[str]) -> str:
     """Delete elements by id."""
-    target, ids = workspace.edit(path, lambda doc: doc.delete(element_ids))
+    target = workspace.resolve(path)
+    ids = operations.delete(target, element_ids)
 
     return f"Deleted from {workspace.relative(target)}: {', '.join(ids)}"
 
@@ -175,14 +177,14 @@ def delete_elements(path: str, element_ids: list[str]) -> str:
 @tool
 def get_element(path: str, element_id: str) -> str:
     """Return the SVG source of one element."""
-    return workspace.load(path).element_source(element_id)
+    return operations.element(workspace.resolve(path), element_id)
 
 
 @tool
 def undo_last_change(path: str) -> str:
     """Revert the document to the snapshot taken before the most recent change."""
     target = workspace.resolve(path, must_exist=False)
-    remaining = workspace.history.undo(target)
+    remaining = operations.undo(target)
     if remaining is None:
         return "Nothing to undo."
 
@@ -193,13 +195,9 @@ def undo_last_change(path: str) -> str:
 def render_preview(path: str, width: int = 800, element_id: str | None = None,
                    background: str = "#ffffff") -> Image:
     """Render the document (or one element) to a PNG so you can see it. Use this to check your work."""
-    source = workspace.resolve(path)
+    png = operations.preview(workspace.resolve(path), width, element_id, background)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        output = Path(tmp) / "preview.png"
-        inkscape.export(source, output, "png", width=width, object_id=element_id, background=background)
-
-        return Image(data=output.read_bytes(), format="png")
+    return Image(data=png, format="png")
 
 
 @tool
@@ -232,15 +230,9 @@ def run_actions(path: str, actions: list[str], output_path: str | None = None) -
     """
     source = workspace.resolve(path)
     target = workspace.resolve(output_path, must_exist=False) if output_path else source
+    log = operations.run_actions(source, actions, target)
 
-    workspace.history.snapshot(target)
-    log = inkscape.run_actions(source, actions, output_path=target)
-
-    message = f"Ran {len(actions)} action(s); saved {workspace.relative(target)}."
-    if log:
-        message += f"\nInkscape output:\n{log}"
-
-    return f"{message}\n\n{SvgDocument.load(target).outline()}"
+    return saved_message(f"Ran {len(actions)} action(s)", target, log)
 
 
 @tool
@@ -253,33 +245,10 @@ def boolean_operation(path: str, element_ids: list[str],
     List the bottom object first. For difference/cut/division the top (last) object is the cutter.
     By default the result keeps the first object's fill/stroke; Inkscape alone may take the top object's.
     """
-    if len(element_ids) < 2:
-        raise ValueError("Need at least two element ids.")
-
     source = workspace.resolve(path)
-    first = SvgDocument.load(source).find(element_ids[0])
-    saved_style = {name: first.get(name) for name in STYLE_ATTRIBUTES}
+    log = operations.boolean(source, element_ids, operation, keep_style_of_first)
 
-    workspace.history.snapshot(source)
-    log = inkscape.run_actions(source, [f"select-by-id:{','.join(element_ids)}", "object-to-path",
-                                        BOOLEAN_ACTIONS[operation]])
-
-    doc = SvgDocument.load(source)
-    survivors = [element_id for element_id in element_ids if doc.has(element_id)]
-    if keep_style_of_first and operation in SINGLE_RESULT_OPERATIONS and len(survivors) == 1:
-        result = doc.find(survivors[0])
-        for name, value in saved_style.items():
-            if value is None:
-                result.attrib.pop(name, None)
-            else:
-                result.set(name, value)
-        doc.save(source)
-
-    message = f"Applied {operation} to {', '.join(element_ids)}; saved {workspace.relative(source)}."
-    if log:
-        message += f"\nInkscape output:\n{log}"
-
-    return f"{message}\n\n{doc.outline()}"
+    return saved_message(f"Applied {operation} to {', '.join(element_ids)}", source, log)
 
 
 @tool
@@ -289,24 +258,16 @@ def align_objects(path: str, element_ids: list[str],
                   relative_to: Literal["page", "drawing", "selection", "first", "last", "biggest",
                                        "smallest"] = "page") -> str:
     """Align elements with Inkscape's Align tool, e.g. horizontal="hcenter", vertical="vcenter", relative_to="page"."""
-    if not horizontal and not vertical:
-        raise ValueError("Give horizontal and/or vertical.")
+    source = workspace.resolve(path)
+    log = operations.align(source, element_ids, horizontal, vertical, relative_to)
 
-    anchor = " ".join(side for side in (horizontal, vertical) if side)
-
-    return run_actions(path, [f"select-by-id:{','.join(element_ids)}", f"object-align:{anchor} {relative_to}"])
+    return saved_message(f"Aligned {', '.join(element_ids)}", source, log)
 
 
 @tool
 def get_bounding_boxes(path: str, element_ids: list[str] | None = None) -> str:
     """Inkscape-measured bounding boxes (x, y, width, height in user units) for elements."""
-    boxes = inkscape.query_all(workspace.resolve(path))
-    if element_ids:
-        boxes = {key: box for key, box in boxes.items() if key in element_ids}
-
-    lines = [f"{key}: x={x:.2f} y={y:.2f} w={w:.2f} h={h:.2f}" for key, (x, y, w, h) in boxes.items()]
-
-    return "\n".join(lines) or "No matches."
+    return operations.bounding_boxes(workspace.resolve(path), element_ids)
 
 
 @tool
@@ -379,7 +340,7 @@ def live_snapshot(width: int = 800) -> Image:
 def live_pull(path: str) -> str:
     """Copy the document in the active Inkscape window (with unsaved changes) to a workspace file."""
     target = workspace.resolve(path, must_exist=False)
-    workspace.history.snapshot(target)
+    operations.history.snapshot(target)
     live.export(target, "svg")
 
     return f"Saved the live document to {workspace.relative(target)}\n\n{SvgDocument.load(target).outline()}"

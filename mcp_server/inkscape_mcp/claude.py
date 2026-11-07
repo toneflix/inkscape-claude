@@ -1,4 +1,4 @@
-"""Claude API client for the Ask Claude extension.
+"""Claude API client shared by the Inkscape extension, the drawing agent and the chat panel.
 
 Uses the `anthropic` SDK when it is importable, otherwise a standard-library HTTPS request,
 because Inkscape's bundled Python on Windows and macOS usually lacks extra packages.
@@ -6,6 +6,7 @@ because Inkscape's bundled Python on Windows and macOS usually lacks extra packa
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import urllib.error
@@ -14,7 +15,7 @@ from pathlib import Path
 
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
-KEY_REJECTED = "The API key was rejected. Check it in Settings."
+KEY_REJECTED = "The API key was rejected. Check the key you configured."
 
 
 class ClaudeError(RuntimeError):
@@ -56,7 +57,7 @@ class Config:
 
 
 class ClaudeClient:
-    """Sends one message to Claude and returns the reply text."""
+    """Sends Messages API requests. Responses are plain dicts so both transports look the same."""
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL, effort: str = "medium", max_tokens: int = 64000):
         self.api_key = api_key
@@ -66,37 +67,49 @@ class ClaudeClient:
 
     @classmethod
     def create(cls, *args, **kwargs) -> ClaudeClient:
-        if os.environ.get("INKSCAPE_CLAUDE_NO_SDK") != "1":
-            try:
-                import anthropic  # noqa: F401
+        use_sdk = os.environ.get("INKSCAPE_CLAUDE_NO_SDK") != "1" and importlib.util.find_spec("anthropic")
 
-                return SdkClaudeClient(*args, **kwargs)
-            except ImportError:
-                pass
+        return SdkClaudeClient(*args, **kwargs) if use_sdk else HttpClaudeClient(*args, **kwargs)
 
-        return HttpClaudeClient(*args, **kwargs)
-
-    def ask(self, system: str, content: list) -> str:
+    def send(self, system: str, messages: list[dict], tools: list[dict] | None = None) -> dict:
+        """Return the response as {"content": [...], "stop_reason": ...}."""
         raise NotImplementedError
 
-    def body(self, system: str, content: list) -> dict:
-        return {
+    def ask(self, system: str, content: list) -> str:
+        response = self.send(system, [{"role": "user", "content": content}])
+
+        return self.finish(response)
+
+    def body(self, system: str, messages: list[dict], tools: list[dict] | None) -> dict:
+        body = {
             "model": self.model,
             "max_tokens": self.max_tokens,
             "system": system,
             "thinking": {"type": "adaptive"},
             "output_config": {"effort": self.effort},
+            "cache_control": {"type": "ephemeral"},
             "fallbacks": "default",
-            "messages": [{"role": "user", "content": content}],
+            "messages": messages,
         }
+        if tools:
+            body["tools"] = tools
+
+        return body
 
     @staticmethod
-    def finish(stop_reason: str | None, text: str) -> str:
+    def text(response: dict) -> str:
+        return "".join(block.get("text", "") for block in response["content"] if block.get("type") == "text")
+
+    @classmethod
+    def finish(cls, response: dict) -> str:
+        stop_reason = response.get("stop_reason")
         if stop_reason == "refusal":
             raise ClaudeError("Claude declined this request.")
         if stop_reason == "max_tokens":
             raise ClaudeError("Claude's answer was cut off (max output tokens reached). "
-                              "Raise 'Max output tokens' in Settings or work on a smaller selection.")
+                              "Raise the output token limit or work on a smaller part of the drawing.")
+
+        text = cls.text(response)
         if not text.strip():
             raise ClaudeError("Claude returned an empty answer.")
 
@@ -104,13 +117,13 @@ class ClaudeClient:
 
 
 class SdkClaudeClient(ClaudeClient):
-    def ask(self, system: str, content: list) -> str:
+    def send(self, system: str, messages: list[dict], tools: list[dict] | None = None) -> dict:
         import anthropic
 
         client = anthropic.Anthropic(api_key=self.api_key)
 
         try:
-            with client.beta.messages.stream(betas=[FALLBACK_BETA], **self.body(system, content)) as stream:
+            with client.beta.messages.stream(betas=[FALLBACK_BETA], **self.body(system, messages, tools)) as stream:
                 message = stream.get_final_message()
         except anthropic.AuthenticationError as exc:
             raise ClaudeError(KEY_REJECTED) from exc
@@ -121,9 +134,9 @@ class SdkClaudeClient(ClaudeClient):
         except anthropic.APIConnectionError as exc:
             raise ClaudeError(f"Could not reach the Claude API: {exc}") from exc
 
-        text = "".join(block.text for block in message.content if block.type == "text")
+        data = message.to_dict(mode="json", exclude_none=True)
 
-        return self.finish(message.stop_reason, text)
+        return {"content": data["content"], "stop_reason": data.get("stop_reason")}
 
 
 class HttpClaudeClient(ClaudeClient):
@@ -133,10 +146,10 @@ class HttpClaudeClient(ClaudeClient):
     def url(self) -> str:
         return os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/") + "/v1/messages"
 
-    def ask(self, system: str, content: list) -> str:
+    def send(self, system: str, messages: list[dict], tools: list[dict] | None = None) -> dict:
         request = urllib.request.Request(
             self.url,
-            data=json.dumps(self.body(system, content)).encode("utf-8"),
+            data=json.dumps(self.body(system, messages, tools)).encode("utf-8"),
             method="POST",
             headers={
                 "content-type": "application/json",
@@ -156,9 +169,7 @@ class HttpClaudeClient(ClaudeClient):
         except urllib.error.URLError as exc:
             raise ClaudeError(f"Could not reach the Claude API: {exc.reason}") from exc
 
-        text = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
-
-        return self.finish(data.get("stop_reason"), text)
+        return {"content": data.get("content", []), "stop_reason": data.get("stop_reason")}
 
     @staticmethod
     def _detail(exc: urllib.error.HTTPError) -> str:

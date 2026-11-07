@@ -3,3 +3,4 @@ __pycache__/
 .pytest_cache/
 .inkscape-claude-history/
 build/
+dist/

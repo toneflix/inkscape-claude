@@ -18,9 +18,13 @@ import inkex
 from inkex import command
 from lxml import etree
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+HERE = Path(__file__).resolve().parent
+sys.path[:0] = [str(HERE), str(HERE.parent / "mcp_server")]
 
-from claude_api import DEFAULT_MODEL, ClaudeClient, ClaudeError, Config  # noqa: E402
+from inkscape_mcp.agent import DrawingAgent  # noqa: E402
+from inkscape_mcp.claude import DEFAULT_MODEL, ClaudeClient, ClaudeError, Config  # noqa: E402
+from inkscape_mcp.cli import Inkscape  # noqa: E402
+from inkscape_mcp.operations import DocumentOperations  # noqa: E402
 
 SVG_WRAPPER = (
     '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
@@ -55,6 +59,13 @@ Use the same coordinate system as the selected elements.",
     "add": "Return only the new SVG elements to add, as a fragment (no <svg> root). Do not repeat existing \
 elements. Put any gradients, markers or filters they need in a <defs> element in the same block. \
 Coordinates are in the target layer's user space, described below.",
+}
+
+TOOL_SCOPE_INSTRUCTIONS = {
+    "document": "You may change anything in the document.",
+    "selection": "Only change the selected elements ({ids}) and anything they need, unless the instruction "
+                 "clearly asks for more.",
+    "add": "Add new artwork to layer id=\"{layer}\". Do not change or remove existing elements.",
 }
 
 
@@ -158,6 +169,7 @@ class AskClaude(inkex.EffectExtension):
         pars.add_argument("--tab", default="prompt")
         pars.add_argument("--prompt", default="")
         pars.add_argument("--scope", default="auto")
+        pars.add_argument("--method", default="tools")
         pars.add_argument("--send_image", type=inkex.Boolean, default=True)
         pars.add_argument("--show_reply", type=inkex.Boolean, default=True)
         pars.add_argument("--model", default=DEFAULT_MODEL)
@@ -174,20 +186,19 @@ class AskClaude(inkex.EffectExtension):
         scope = self.resolve_scope(selected)
         self.placeholders = ImagePlaceholders()
 
-        reply = ClaudeReply.parse(self.ask(prompt, scope, selected))
-        if reply.svg is None:
-            raise inkex.AbortExtension("Claude did not return any SVG. Its reply was:\n\n" + reply.note[:2000])
+        try:
+            client = ClaudeClient.create(Config.api_key(self.options.api_key),
+                                         model=self.options.model.strip() or DEFAULT_MODEL,
+                                         effort=self.options.effort, max_tokens=self.options.max_tokens)
+            if self.options.method == "tools":
+                note = self.edit_with_tools(client, prompt, scope, selected)
+            else:
+                note = self.rewrite(client, prompt, scope, selected)
+        except ClaudeError as exc:
+            raise inkex.AbortExtension(str(exc))
 
-        svg = self.placeholders.restore(reply.svg)
-        if scope == "document":
-            self.apply_document(svg)
-        elif scope == "selection":
-            self.apply_selection(svg, selected)
-        else:
-            self.apply_add(svg)
-
-        if reply.note and self.options.show_reply:
-            self.msg(f"Claude: {reply.note}")
+        if note and self.options.show_reply:
+            self.msg(f"Claude: {note}")
 
     def resolve_scope(self, selected) -> str:
         scope = self.options.scope
@@ -200,29 +211,50 @@ class AskClaude(inkex.EffectExtension):
 
         return scope
 
-    def ask(self, prompt: str, scope: str, selected) -> str:
-        try:
-            client = ClaudeClient.create(Config.api_key(self.options.api_key),
-                                         model=self.options.model.strip() or DEFAULT_MODEL,
-                                         effort=self.options.effort, max_tokens=self.options.max_tokens)
-        except ClaudeError as exc:
-            raise inkex.AbortExtension(str(exc))
+    def canvas_image(self) -> list[dict]:
+        png = self.render_png() if self.options.send_image else None
+        if not png:
+            return []
 
-        content = []
-        if self.options.send_image:
-            png = self.render_png()
-            if png:
-                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/png",
-                                                            "data": png}})
+        return [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": png}}]
 
+    def rewrite(self, client: ClaudeClient, prompt: str, scope: str, selected) -> str:
         context = self.describe(scope, selected)
-        content.append({"type": "text",
-                        "text": f"{context}\n\nInstruction: {prompt}\n\n{SCOPE_INSTRUCTIONS[scope]}"})
+        content = [*self.canvas_image(),
+                   {"type": "text", "text": f"{context}\n\nInstruction: {prompt}\n\n{SCOPE_INSTRUCTIONS[scope]}"}]
 
-        try:
-            return client.ask(SYSTEM_PROMPT, content)
-        except ClaudeError as exc:
-            raise inkex.AbortExtension(str(exc))
+        reply = ClaudeReply.parse(client.ask(SYSTEM_PROMPT, content))
+        if reply.svg is None:
+            raise inkex.AbortExtension("Claude did not return any SVG. Its reply was:\n\n" + reply.note[:2000])
+
+        svg = self.placeholders.restore(reply.svg)
+        if scope == "document":
+            self.apply_document(svg)
+        elif scope == "selection":
+            self.apply_selection(svg, selected)
+        else:
+            self.apply_add(svg)
+
+        return reply.note
+
+    def edit_with_tools(self, client: ClaudeClient, prompt: str, scope: str, selected) -> str:
+        """Let Claude edit a copy of the document step by step with Inkscape tools, then load the result."""
+        instructions = TOOL_SCOPE_INSTRUCTIONS[scope].format(
+            ids=", ".join(el.get("id") for el in selected), layer=self.target_layer().get("id"))
+        context = [*self.canvas_image(),
+                   {"type": "text", "text": f"The image shows the page as it is now. {instructions}"}]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "drawing.svg"
+            self.document.write(str(path))
+
+            inkscape = Inkscape(os.environ.get("INKSCAPE_COMMAND"))
+            agent = DrawingAgent(client, DocumentOperations(inkscape), path)
+            result = agent.run(prompt, context)
+
+            self.apply_document(path.read_text(encoding="utf-8"))
+
+        return f"{result.reply}\n({len(result.steps)} step(s))"
 
     def selected_in_order(self):
         selection = self.svg.selection

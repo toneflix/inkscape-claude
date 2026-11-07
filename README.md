@@ -98,9 +98,14 @@ tools report that live control is unavailable; edit the file and use File > Reve
 
 ### Install
 
-Copy the three files in `extension/` into your Inkscape user extensions folder, in a subfolder such as
-`claude/`, then restart Inkscape. Find the folder in **Edit > Preferences > System > User extensions**.
-Typical locations:
+Build the package and unzip it into your Inkscape user extensions folder, then restart Inkscape:
+
+```bash
+python scripts/package_extension.py     # writes dist/ask-claude-extension.zip
+```
+
+The zip holds a `claude/` folder with the extension and the `inkscape_mcp` code it shares with the MCP
+server. Find the extensions folder in **Edit > Preferences > System > User extensions**. Typical locations:
 
 - Linux: `~/.config/inkscape/extensions/`
 - macOS: `~/Library/Application Support/org.inkscape.Inkscape/config/inkscape/extensions/`
@@ -119,12 +124,15 @@ Get a key from the [Claude Console](https://platform.claude.com/), then do one o
 
 **Extensions > Claude > Ask Claude…**, type what you want, and press Apply.
 
+- **How**: *Step by step with Inkscape tools* (default) lets Claude look at the outline, make focused edits,
+  run booleans and alignment in Inkscape, and check a rendered preview before it finishes, the same tools
+  the MCP server offers. *Rewrite the SVG in one go* is faster and asks Claude for the finished SVG directly.
 - **Apply to**: the selection if there is one, otherwise the whole drawing (default); or force whole
   drawing / selection only; or *Add new artwork* to the current layer without touching anything else.
 - A picture of the canvas is sent along by default so Claude can see what it is editing.
 - Defaults: model `claude-opus-5-5`, adaptive thinking, effort `medium`. Change them in Settings.
-- Embedded raster images are swapped for short placeholders before sending and restored afterwards,
-  so a photo in the document does not use up the request.
+- In rewrite mode, embedded raster images are swapped for short placeholders before sending and restored
+  afterwards, so a photo in the document does not use up the request.
 - Claude's SVG is cleaned before it goes in: scripts, event handlers, `foreignObject` and external links
   are removed. Ids that clash with existing ones are renamed.
 
@@ -157,5 +165,3 @@ Tested with Inkscape 1.2.2, Python 3.13, `mcp` 2.3, `inkex` 1.4 and `anthropic` 
 
 - A docked chat panel: a small local server that the extension talks to, so the conversation keeps going
   across several edits.
-- Let the extension call the MCP tools itself (booleans, alignment) through Claude tool use, instead
-  of writing everything as raw SVG.

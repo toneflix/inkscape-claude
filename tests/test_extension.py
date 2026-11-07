@@ -40,8 +40,11 @@ REPLIES = {
 
 
 class FakeClaude(BaseHTTPRequestHandler):
+    """Answers like the Messages API. Pops scripted responses from `script`, else replies with `reply` text."""
+
     requests = []
     reply = ""
+    script = []
 
     def log_message(self, *a):
         pass
@@ -49,35 +52,61 @@ class FakeClaude(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
         FakeClaude.requests.append({"body": body, "headers": dict(self.headers)})
-        text = FakeClaude.reply
-        msg = {"id": "msg_1", "type": "message", "role": "assistant", "model": body["model"],
-               "content": [], "stop_reason": None, "stop_sequence": None,
-               "usage": {"input_tokens": 10, "output_tokens": 0}}
-        if body.get("stream"):
-            self.send_response(200)
-            self.send_header("content-type", "text/event-stream")
-            self.end_headers()
-            events = [
-                ("message_start", {"type": "message_start", "message": msg}),
-                ("content_block_start", {"type": "content_block_start", "index": 0,
-                                         "content_block": {"type": "text", "text": ""}}),
-                ("content_block_delta", {"type": "content_block_delta", "index": 0,
-                                         "delta": {"type": "text_delta", "text": text}}),
-                ("content_block_stop", {"type": "content_block_stop", "index": 0}),
-                ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                                   "usage": {"output_tokens": 5}}),
-                ("message_stop", {"type": "message_stop"}),
-            ]
-            for name, data in events:
-                self.wfile.write(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode())
+
+        if FakeClaude.script:
+            content, stop_reason = FakeClaude.script.pop(0)
         else:
-            msg.update(content=[{"type": "text", "text": text}], stop_reason="end_turn")
-            out = json.dumps(msg).encode()
-            self.send_response(200)
-            self.send_header("content-type", "application/json")
-            self.send_header("content-length", str(len(out)))
-            self.end_headers()
-            self.wfile.write(out)
+            content, stop_reason = [{"type": "text", "text": FakeClaude.reply}], "end_turn"
+
+        if body.get("stream"):
+            self.stream(body, content, stop_reason)
+        else:
+            self.respond(body, content, stop_reason)
+
+    @staticmethod
+    def message(body, content, stop_reason):
+        return {"id": "msg_1", "type": "message", "role": "assistant", "model": body["model"], "content": content,
+                "stop_reason": stop_reason, "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 5}}
+
+    def respond(self, body, content, stop_reason):
+        out = json.dumps(self.message(body, content, stop_reason)).encode()
+
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def stream(self, body, content, stop_reason):
+        events = [("message_start", {"type": "message_start", "message": self.message(body, [], None)})]
+
+        for index, block in enumerate(content):
+            if block["type"] == "text":
+                start, delta = {"type": "text", "text": ""}, {"type": "text_delta", "text": block["text"]}
+            else:
+                start = {"type": "tool_use", "id": block["id"], "name": block["name"], "input": {}}
+                delta = {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}
+            events += [
+                ("content_block_start", {"type": "content_block_start", "index": index, "content_block": start}),
+                ("content_block_delta", {"type": "content_block_delta", "index": index, "delta": delta}),
+                ("content_block_stop", {"type": "content_block_stop", "index": index}),
+            ]
+
+        events += [
+            ("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+                               "usage": {"output_tokens": 5}}),
+            ("message_stop", {"type": "message_stop"}),
+        ]
+
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.end_headers()
+        for name, data in events:
+            self.wfile.write(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode())
+
+
+def tool_use(tool_id, name, **arguments):
+    return {"type": "tool_use", "id": tool_id, "name": name, "input": arguments}
 
 
 @pytest.fixture(scope="module")
@@ -88,16 +117,17 @@ def fake_api():
     srv.shutdown()
 
 
-def run_ext(tmp_path, base_url, scope, ids=(), use_sdk=True):
+def run_ext(tmp_path, base_url, scope, ids=(), use_sdk=True, method="rewrite"):
     src = tmp_path / "in.svg"
     src.write_text(DOC)
-    FakeClaude.reply = REPLIES[scope]
+    FakeClaude.reply = REPLIES.get(scope, "Done.")
     FakeClaude.requests.clear()
     env = {**os.environ, "ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_API_KEY": "sk-test",
            "INKSCAPE_CLAUDE_NO_SDK": "0" if use_sdk else "1"}
-    args = [sys.executable, str(EXT), f"--scope={scope}", "--prompt=Do the thing\\nplease", "--send_image=false"]
+    args = [sys.executable, str(EXT), f"--scope={scope}", "--prompt=Do the thing\\nplease", "--send_image=false",
+            f"--method={method}"]
     args += [f"--id={i}" for i in ids]
-    proc = subprocess.run(args + [str(src)], capture_output=True, text=True, env=env, timeout=60)
+    proc = subprocess.run(args + [str(src)], capture_output=True, text=True, env=env, timeout=180)
     assert proc.returncode == 0, proc.stderr
     return etree.fromstring(proc.stdout.encode()), proc.stderr, FakeClaude.requests[-1]
 
@@ -136,6 +166,38 @@ def test_add_scope(tmp_path, fake_api):
     layer = root.xpath("//*[@id='layer1']")[0]
     assert [c.get("id") for c in layer] == ["r1", "r2", "r2-1"]
     assert layer[-1].text == "Hi"
+
+
+@pytest.mark.parametrize("use_sdk", [True, False])
+def test_tool_method_edits_step_by_step(tmp_path, fake_api, use_sdk):
+    FakeClaude.script = [
+        ([tool_use("t1", "get_outline")], "tool_use"),
+        ([{"type": "text", "text": "Merging the squares."},
+          tool_use("t2", "add_elements", svg_fragment='<rect id="r3" x="40" y="40" width="80" height="80" fill="blue"/>'),
+          tool_use("t3", "boolean_operation", element_ids=["r1", "r3"], operation="union")], "tool_use"),
+        ([tool_use("t4", "delete_elements", element_ids=["missing"]), tool_use("t5", "render_preview", width=200)],
+         "tool_use"),
+        ([{"type": "text", "text": "Joined the red square with a new one."}], "end_turn"),
+    ]
+
+    root, err, last = run_ext(tmp_path, fake_api, "document", use_sdk=use_sdk, method="tools")
+
+    bodies = [r["body"] for r in FakeClaude.requests]
+    assert len(bodies) == 4
+    assert {t["name"] for t in bodies[0]["tools"]} >= {"get_outline", "boolean_operation", "render_preview"}
+
+    outline_result = bodies[1]["messages"][-1]["content"][0]
+    assert outline_result["tool_use_id"] == "t1" and "r1" in outline_result["content"]
+
+    results = {r["tool_use_id"]: r for r in bodies[3]["messages"][-1]["content"]}
+    assert results["t4"]["is_error"] and "missing" in results["t4"]["content"]
+    assert results["t5"]["content"][0]["type"] == "image"
+
+    assert root.xpath("//*[@id='r1']")[0].tag.endswith("path"), "union ran in Inkscape"
+    assert not root.xpath("//*[@id='r3']")
+    assert root.xpath("//*[@id='r1']")[0].get("fill") == "red", "result kept the bottom object's style"
+    assert root.xpath("//*[@id='r2']"), "untouched element kept"
+    assert "Joined the red square" in err and "(5 step(s))" in err
 
 
 def test_missing_key(tmp_path):

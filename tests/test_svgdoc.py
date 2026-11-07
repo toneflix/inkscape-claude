@@ -8,6 +8,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp_server"))
 
 from inkscape_mcp.svgdoc import INKSCAPE_NS, SvgDocument, SvgError, parse_style  # noqa: E402
+from inkscape_mcp.cli import Inkscape  # noqa: E402
+from inkscape_mcp.operations import DocumentOperations  # noqa: E402
 from inkscape_mcp.workspace import Workspace  # noqa: E402
 
 
@@ -96,13 +98,13 @@ def test_workspace_refuses_paths_outside_root(tmp_path):
         workspace.resolve("../outside.svg", must_exist=False)
 
 
-def test_workspace_edit_and_undo(tmp_path):
-    workspace = Workspace(tmp_path)
-    target = workspace.resolve("a.svg", must_exist=False)
-    workspace.write(target, blank())
+def test_operations_edit_and_undo(tmp_path):
+    operations = DocumentOperations(Inkscape())
+    target = tmp_path / "a.svg"
+    operations.write(target, blank())
 
-    workspace.edit("a.svg", lambda doc: doc.delete(["background"]))
+    operations.delete(target, ["background"])
 
-    assert not workspace.load("a.svg").has("background")
-    assert workspace.history.undo(target) == 0
-    assert workspace.load("a.svg").has("background")
+    assert not SvgDocument.load(target).has("background")
+    assert operations.undo(target) == 0
+    assert SvgDocument.load(target).has("background")

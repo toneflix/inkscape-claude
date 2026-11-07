@@ -5,13 +5,10 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Callable, TypeVar
 
 from .svgdoc import SvgDocument
 
 HISTORY_FOLDER = ".inkscape-claude-history"
-
-T = TypeVar("T")
 
 
 class History:
@@ -90,15 +87,3 @@ class Workspace:
 
     def load(self, path: str) -> SvgDocument:
         return SvgDocument.load(self.resolve(path))
-
-    def write(self, target: Path, doc: SvgDocument) -> None:
-        self.history.snapshot(target)
-        doc.save(target)
-
-    def edit(self, path: str, change: Callable[[SvgDocument], T]) -> tuple[Path, T]:
-        target = self.resolve(path)
-        doc = SvgDocument.load(target)
-        result = change(doc)
-        self.write(target, doc)
-
-        return target, result
