@@ -222,7 +222,7 @@ class SvgDocument:
             if text:
                 bits.append(f'text="{text[:60]}"')
 
-        fill = element.get("fill") or parse_style(element.get("style", "")).get("fill")
+        fill = parse_style(element.get("style", "")).get("fill") or element.get("fill")
         if fill:
             bits.append(f"fill={fill}")
 
