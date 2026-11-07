@@ -25,6 +25,7 @@ from inkscape_mcp.agent import DrawingAgent  # noqa: E402
 from inkscape_mcp.claude import DEFAULT_MODEL, ClaudeClient, ClaudeError, Config  # noqa: E402
 from inkscape_mcp.cli import Inkscape  # noqa: E402
 from inkscape_mcp.operations import DocumentOperations  # noqa: E402
+from inkscape_mcp.svgdoc import SvgDocument  # noqa: E402
 
 SVG_WRAPPER = (
     '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
@@ -242,7 +243,7 @@ class AskClaude(inkex.EffectExtension):
         instructions = TOOL_SCOPE_INSTRUCTIONS[scope].format(
             ids=", ".join(el.get("id") for el in selected), layer=self.target_layer().get("id"))
         context = [*self.canvas_image(),
-                   {"type": "text", "text": f"The image shows the page as it is now. {instructions}"}]
+                   {"type": "text", "text": f"The image shows every page as it is now. {instructions}"}]
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "drawing.svg"
@@ -273,10 +274,11 @@ class AskClaude(inkex.EffectExtension):
         return layers[-1] if layers else layer
 
     def describe(self, scope: str, selected) -> str:
-        page = f"Page: width={self.svg.get('width')} height={self.svg.get('height')} viewBox={self.svg.get('viewBox')}."
+        page = self.pages_note()
 
         if scope == "document":
-            return f"{page}\nThe image shows the current page.\n\nCurrent document:\n```svg\n{self.document_source()}\n```"
+            return (f"{page}\nThe image shows every page as it is now.\n\n"
+                    f"Current document:\n```svg\n{self.document_source()}\n```")
 
         if scope == "selection":
             return self.describe_selection(page, selected)
@@ -293,12 +295,45 @@ class AskClaude(inkex.EffectExtension):
         transform = self.transform_note(parent, ", whose transform to page coordinates is {}")
         defs = self.defs_source()
 
-        text = (f"{page}\nThe image shows the whole page; only the selected elements below will be replaced.\n"
+        text = (f"{page}\nThe image shows every page; only the selected elements below will be replaced.\n"
+                f"{self.selection_pages(selected)}"
                 f"Their parent element is <{etree.QName(parent).localname} id=\"{parent.get('id')}\">{transform}.\n")
         if defs:
             text += f"\nDocument <defs> (for reference; you can reuse these ids):\n```svg\n{defs}\n```\n"
 
         return text + f"\nSelected elements ({len(selected)}):\n```svg\n{fragment}\n```"
+
+    def pages_note(self) -> str:
+        svg = self.svg
+        pages = SvgDocument(self.document).pages.list()
+        size = f"width={svg.get('width')} height={svg.get('height')} viewBox={svg.get('viewBox')}"
+        if len(pages) == 1:
+            return f"Page: {size}."
+
+        lines = [f"Document: {size}. It has {len(pages)} pages (artboards) on one canvas, positioned in user units:"]
+        lines += [f"- {page.describe()}" for page in pages]
+        lines.append("Keep each piece of artwork inside the page it belongs to.")
+
+        return "\n".join(lines)
+
+    def selection_pages(self, selected) -> str:
+        pages = SvgDocument(self.document).pages
+        if len(pages.list()) == 1:
+            return ""
+
+        numbers = set()
+        for element in selected:
+            try:
+                box = element.bounding_box(element.getparent().composed_transform())
+            except Exception:
+                continue
+            if box is not None:
+                numbers.update(page.number for page in pages.pages_under((box.left, box.top, box.width, box.height)))
+
+        if not numbers:
+            return ""
+
+        return f"The selection is on page {', '.join(str(number) for number in sorted(numbers))}.\n"
 
     @staticmethod
     def transform_note(element, template: str) -> str:
@@ -320,12 +355,16 @@ class AskClaude(inkex.EffectExtension):
         return self.placeholders.strip("\n".join(etree.tostring(child, encoding="unicode") for child in defs))
 
     def render_png(self) -> str | None:
-        """Render the page to PNG with Inkscape; returns base64, or None if rendering fails."""
+        """Render every page to PNG with Inkscape; returns base64, or None if rendering fails."""
+        doc = SvgDocument(self.document)
+        x, y, width, height = doc.to_px(doc.pages.bounds())
+
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 output = os.path.join(tmp, "canvas.png")
                 command.inkscape(self.options.input_file, export_filename=output, export_type="png",
-                                 export_width=1024, export_area_page=True, export_background="#ffffff",
+                                 export_width=1024, export_area=f"{x:g}:{y:g}:{x + width:g}:{y + height:g}",
+                                 export_background="#ffffff",
                                  export_background_opacity=1)
 
                 with open(output, "rb") as handle:
