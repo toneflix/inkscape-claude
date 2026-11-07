@@ -67,6 +67,24 @@ and export a PDF."*
 | `undo_last_change` | Every edit snapshots the file first; this steps back one snapshot |
 | `list_documents`, `inkscape_info`, `open_in_inkscape` | Housekeeping; the last opens the file in the Inkscape app |
 
+### Live control (Linux)
+
+On Linux, Inkscape publishes its actions on the session D-Bus, so Claude can work on the window you have
+open and you see each change as it happens:
+
+| Tool | What it does |
+| --- | --- |
+| `live_status` | Whether a running Inkscape can be reached, and its window/document numbers |
+| `live_open` | Opens a workspace file in the running Inkscape (starts it if needed) |
+| `live_run_actions` | Runs actions in the window, e.g. `["select-by-id:logo", "object-align:hcenter page"]`; Ctrl+Z undoes them |
+| `live_snapshot` | A PNG of what is in the window now, unsaved changes included |
+| `live_pull` | Copies the window's document, unsaved changes included, into a workspace file |
+| `live_save` / `live_reload` | File > Save and File > Revert, so file edits made with the other tools show up in the window |
+
+The usual loop for bigger edits is `live_save`, edit the file with the normal tools, then `live_reload`.
+Live control needs the `gdbus` command (part of GLib, installed on most desktops). On macOS and Windows these
+tools report that live control is unavailable; edit the file and use File > Revert instead.
+
 ### Settings (environment variables)
 
 | Variable | Default | Meaning |
@@ -120,15 +138,16 @@ Inkscape's bundled Python on Windows and macOS usually does not have extra packa
   are one-shot, so there is no back-and-forth chat inside the canvas yet.
 - *Selection only* replaces the selected objects in place. If they sit in different groups or layers,
   the result goes where the first one was.
-- The MCP server works on files. It does not drive an Inkscape window that is already open; use
-  `open_in_inkscape`, or File > Revert in Inkscape, to see changes made on disk.
+- Live control of an open window works on Linux only. On macOS and Windows the MCP server works on files;
+  use `open_in_inkscape`, or File > Revert in Inkscape, to see changes made on disk.
 
 ## Tests
 
 ```bash
 pip install pytest
-python -m pytest tests            # 16 tests; the extension runs against a fake Claude API, no key needed
+python -m pytest tests            # the live test is skipped without a display; the extension runs against a fake Claude API, no key needed
 python tests/smoke_mcp.py         # starts the MCP server and calls every tool once (needs Inkscape)
+xvfb-run -a dbus-run-session -- python -m pytest tests/test_live.py   # live control against a real Inkscape window
 python examples/demo_drawing.py   # draws the demo badge into the workspace
 ```
 
@@ -136,7 +155,6 @@ Tested with Inkscape 1.2.2, Python 3.13, `mcp` 2.3, `inkex` 1.4 and `anthropic` 
 
 ## Ideas for next steps
 
-- Live control of a running Inkscape window through D-Bus/Gio actions (Linux) so changes show up instantly.
 - A docked chat panel: a small local server that the extension talks to, so the conversation keeps going
   across several edits.
 - Let the extension call the MCP tools itself (booleans, alignment) through Claude tool use, instead
