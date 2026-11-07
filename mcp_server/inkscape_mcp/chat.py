@@ -50,9 +50,37 @@ class ChatSession:
         self.notes: list[str] = []
         self.lock = threading.Lock()
 
+    @classmethod
+    def open(cls, args: argparse.Namespace) -> ChatSession:
+        """Builds a session from the command line options, opening an Inkscape window to sync with if needed."""
+        document = args.document.expanduser().resolve()
+        if not document.exists():
+            raise ValueError(f"{document} does not exist.")
+
+        client = ClaudeClient.create(Config.api_key(), model=args.model, effort=args.effort)
+        inkscape = Inkscape.from_env()
+        live = None if args.no_live else live_control(inkscape)
+        window = args.window
+        if live is not None and (isinstance(live, ShellInkscape) or not args.attach) and window is None:
+            try:
+                window = live.open(document)
+            except LiveError as exc:
+                print(f"Could not open an Inkscape window to keep in sync: {exc}", flush=True)
+
+        return cls(document, client, inkscape, live, window)
+
     @property
     def live_enabled(self) -> bool:
         return self.live is not None and self.live.available()
+
+    @property
+    def owns_window(self) -> bool:
+        """True when the chat opened the Inkscape window itself, so the window lives and dies with the chat."""
+        return isinstance(self.live, ShellInkscape)
+
+    def close(self) -> None:
+        if self.owns_window:
+            self.live.close()
 
     def state(self) -> dict:
         return {"document": str(self.path), "live": self.live_enabled, "transcript": self.transcript}
@@ -194,47 +222,28 @@ class ChatServer(ThreadingHTTPServer):
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Chat with Claude about an Inkscape drawing.")
     parser.add_argument("document", type=Path, help="SVG file to work on")
-    parser.add_argument("--port", type=int, default=0, help="port to listen on (default: any free port)")
+    parser.add_argument("--ui", choices=["app", "browser"], default="app",
+                        help="a desktop chat window (default; needs GTK 3) or a page in your browser")
+    parser.add_argument("--port", type=int, default=0, help="browser page: port to listen on (default: any free port)")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
-    parser.add_argument("--no-browser", action="store_true", help="print the link instead of opening a browser")
+    parser.add_argument("--no-browser", action="store_true", help="browser page: print the link instead of opening it")
     parser.add_argument("--no-live", action="store_true", help="do not open or sync an Inkscape window")
     parser.add_argument("--attach", action="store_true",
                         help="the document is already open in Inkscape; sync with the newest window (Linux only; "
                              "elsewhere the chat opens its own window)")
     parser.add_argument("--window", type=int, help="Inkscape window number to sync with")
-    parser.add_argument("--idle-minutes", type=float, help="stop after this many minutes without requests")
+    parser.add_argument("--idle-minutes", type=float, help="browser page: stop after this many minutes without use")
 
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv)
-    document = args.document.expanduser().resolve()
-    if not document.exists():
-        sys.exit(f"{document} does not exist.")
-
-    try:
-        client = ClaudeClient.create(Config.api_key(), model=args.model, effort=args.effort)
-    except ClaudeError as exc:
-        sys.exit(str(exc))
-
-    inkscape = Inkscape.from_env()
-    live = None if args.no_live else live_control(inkscape)
-    owns_window = isinstance(live, ShellInkscape)
-    window = args.window
-    if live is not None and (owns_window or not args.attach) and window is None:
-        try:
-            window = live.open(document)
-        except LiveError as exc:
-            print(f"Could not open an Inkscape window to keep in sync: {exc}", flush=True)
-
-    session = ChatSession(document, client, inkscape, live, window)
+def serve_in_browser(session: ChatSession, args: argparse.Namespace) -> None:
     server = ChatServer(session, args.port)
-    print(f"Claude chat for {document}\nOpen: {server.url}\nPress Ctrl+C to stop.", flush=True)
+    print(f"Claude chat for {session.path}\nOpen: {server.url}\nPress Ctrl+C to stop.", flush=True)
 
-    if owns_window and live.available():
-        server.stop_when(lambda: not live.available())
+    if session.owns_window and session.live_enabled:
+        server.stop_when(lambda: not session.live_enabled)
     elif args.idle_minutes:
         server.stop_when_idle(args.idle_minutes)
     if not args.no_browser:
@@ -246,8 +255,27 @@ def main(argv: list[str] | None = None) -> None:
         pass
     finally:
         server.server_close()
-        if owns_window:
-            live.close()
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+
+    try:
+        session = ChatSession.open(args)
+    except (ClaudeError, ValueError) as exc:
+        sys.exit(str(exc))
+
+    try:
+        if args.ui == "app":
+            from .chat_window import ChatWindow
+
+            if ChatWindow.supported():
+                return ChatWindow.run(session)
+            print("GTK 3 is not available to this Python, so the chat opens in your browser instead.", flush=True)
+
+        serve_in_browser(session, args)
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":
