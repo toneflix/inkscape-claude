@@ -157,13 +157,35 @@
     hint.textContent = on ? text : "Enter to send, Shift+Enter for a new line";
   }
 
+  function follow() {
+    const live = document.createElement("div");
+    live.className = "msg assistant";
+    let shown = false;
+    const timer = setInterval(async () => {
+      try {
+        const progress = await api("/api/progress");
+        const last = progress.steps.slice(-3).map((step) => `${step.failed ? "✗" : "•"} ${step.tool}: ${step.summary}`);
+        live.textContent = [progress.text, last.join("\n")].filter(Boolean).join("\n\n");
+        if (live.textContent && !shown) {
+          log.append(live);
+          shown = true;
+        }
+        log.scrollTop = log.scrollHeight;
+      } catch (error) {}
+    }, 500);
+    return () => { clearInterval(timer); live.remove(); };
+  }
+
   async function run(path, body, waiting) {
     busy(true, waiting);
+    const stop = path === "/api/message" ? follow() : () => {};
     try {
       const result = await api(path, body);
+      stop();
       add({ role: result.role || "system", text: result.text, steps: result.steps, selection: result.selection },
           result.preview);
     } catch (error) {
+      stop();
       add({ role: "system", text: `Error: ${error.message}` });
     } finally {
       busy(false);

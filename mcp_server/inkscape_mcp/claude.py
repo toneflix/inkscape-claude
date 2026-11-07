@@ -12,6 +12,7 @@ import os
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -99,8 +100,10 @@ class ClaudeClient:
 
         return SdkClaudeClient(*args, **kwargs) if use_sdk else HttpClaudeClient(*args, **kwargs)
 
-    def send(self, system: str, messages: list[dict], tools: list[dict] | None = None) -> dict:
-        """Return the response as {"content": [...], "stop_reason": ...}."""
+    def send(self, system: str, messages: list[dict], tools: list[dict] | None = None,
+             on_text: Callable[[str], None] | None = None) -> dict:
+        """Return the response as {"content": [...], "stop_reason": ...}. on_text gets the reply text as it
+        arrives."""
         raise NotImplementedError
 
     def ask(self, system: str, content: list) -> str:
@@ -145,13 +148,17 @@ class ClaudeClient:
 
 
 class SdkClaudeClient(ClaudeClient):
-    def send(self, system: str, messages: list[dict], tools: list[dict] | None = None) -> dict:
+    def send(self, system: str, messages: list[dict], tools: list[dict] | None = None,
+             on_text: Callable[[str], None] | None = None) -> dict:
         import anthropic
 
         client = anthropic.Anthropic(api_key=self.api_key)
 
         try:
             with client.beta.messages.stream(betas=[FALLBACK_BETA], **self.body(system, messages, tools)) as stream:
+                for event in stream:
+                    if on_text and event.type == "text":
+                        on_text(event.text)
                 message = stream.get_final_message()
         except anthropic.AuthenticationError as exc:
             raise ClaudeError(KEY_REJECTED) from exc
@@ -174,10 +181,14 @@ class HttpClaudeClient(ClaudeClient):
     def url(self) -> str:
         return os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/") + "/v1/messages"
 
-    def send(self, system: str, messages: list[dict], tools: list[dict] | None = None) -> dict:
+    def send(self, system: str, messages: list[dict], tools: list[dict] | None = None,
+             on_text: Callable[[str], None] | None = None) -> dict:
+        body = self.body(system, messages, tools)
+        if on_text:
+            body["stream"] = True
         request = urllib.request.Request(
             self.url,
-            data=json.dumps(self.body(system, messages, tools)).encode("utf-8"),
+            data=json.dumps(body).encode("utf-8"),
             method="POST",
             headers={
                 "content-type": "application/json",
@@ -189,6 +200,8 @@ class HttpClaudeClient(ClaudeClient):
 
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                if on_text:
+                    return MessageStream(on_text).read(response)
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
@@ -207,3 +220,58 @@ class HttpClaudeClient(ClaudeClient):
             return json.loads(detail)["error"]["message"]
         except (ValueError, KeyError, TypeError):
             return detail
+
+
+class MessageStream:
+    """Builds a Messages API response from its server-sent events, passing reply text on as it arrives."""
+
+    def __init__(self, on_text: Callable[[str], None]):
+        self.on_text = on_text
+        self.blocks: dict[int, dict] = {}
+        self.partial_json: dict[int, str] = {}
+        self.stop_reason: str | None = None
+
+    def read(self, lines) -> dict:
+        data: list[str] = []
+        for raw in lines:
+            line = raw.decode("utf-8").rstrip("\r\n")
+            if line.startswith("data:"):
+                data.append(line[5:].strip())
+            elif not line and data:
+                self.handle(json.loads("\n".join(data)))
+                data = []
+        if data:
+            self.handle(json.loads("\n".join(data)))
+
+        return {"content": [self.blocks[index] for index in sorted(self.blocks)], "stop_reason": self.stop_reason}
+
+    def handle(self, event: dict) -> None:
+        kind = event.get("type")
+        index = event.get("index", 0)
+
+        if kind == "error":
+            raise ClaudeError(f"Claude API error: {event.get('error', {}).get('message', event)}")
+        if kind == "content_block_start":
+            self.blocks[index] = dict(event["content_block"])
+            if self.blocks[index].get("type") == "tool_use":
+                self.partial_json[index] = ""
+        elif kind == "content_block_delta":
+            self.apply(self.blocks[index], index, event["delta"])
+        elif kind == "content_block_stop" and index in self.partial_json:
+            self.blocks[index]["input"] = json.loads(self.partial_json.pop(index) or "{}")
+        elif kind == "message_delta":
+            self.stop_reason = event.get("delta", {}).get("stop_reason", self.stop_reason)
+
+    def apply(self, block: dict, index: int, delta: dict) -> None:
+        kind = delta.get("type")
+        if kind == "text_delta":
+            block["text"] = block.get("text", "") + delta["text"]
+            self.on_text(delta["text"])
+        elif kind == "input_json_delta":
+            self.partial_json[index] += delta.get("partial_json", "")
+        elif kind == "thinking_delta":
+            block["thinking"] = block.get("thinking", "") + delta["thinking"]
+        elif kind == "signature_delta":
+            block["signature"] = delta["signature"]
+        elif kind == "citations_delta":
+            block.setdefault("citations", []).append(delta["citation"])

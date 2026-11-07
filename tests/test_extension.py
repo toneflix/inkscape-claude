@@ -259,3 +259,24 @@ def test_inx_matches_script():
                 Check().assertInxIsGood(inx)
     finally:
         os.chdir(cwd)
+
+
+@pytest.mark.parametrize("client_class", ["SdkClaudeClient", "HttpClaudeClient"])
+def test_streaming_passes_text_on_and_rebuilds_the_message(fake_api, monkeypatch, client_class):
+    sys.path.insert(0, str(HERE.parent / "mcp_server"))
+    from inkscape_mcp import claude
+
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", fake_api)
+    FakeClaude.script = [([{"type": "text", "text": "Adding a box."},
+                           tool_use("t1", "add_elements", svg_fragment="<rect/>")], "tool_use")]
+    pieces = []
+
+    client = getattr(claude, client_class)("sk-test")
+    response = client.send("system", [{"role": "user", "content": "hi"}], [], pieces.append)
+    text, tool = response["content"]
+
+    assert pieces == ["Adding a box."]
+    assert response["stop_reason"] == "tool_use"
+    assert text["text"] == "Adding a box."
+    assert (tool["name"], tool["input"]) == ("add_elements", {"svg_fragment": "<rect/>"})
+    assert FakeClaude.requests[-1]["body"]["stream"] is True
