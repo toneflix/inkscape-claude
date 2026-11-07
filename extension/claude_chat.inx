@@ -5,7 +5,7 @@
 
   <param name="tab" type="notebook">
     <page name="chat" gui-text="Chat">
-      <label>Opens a chat page in your browser for this drawing. Claude edits the saved file and Inkscape reloads it after each answer (on Linux), so keep the browser next to this window.</label>
+      <label>Opens a chat window for this drawing. Claude edits the saved file and the Inkscape window reloads after each answer. On macOS and Windows the chat opens the drawing in a new Inkscape window that it keeps in sync.</label>
       <label>Save the drawing first. Each message saves the drawing before Claude reads it.</label>
       <param name="model" type="string" gui-text="Model:">claude-opus-5-5</param>
       <param name="effort" type="optiongroup" appearance="combo" gui-text="Effort:">
