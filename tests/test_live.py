@@ -126,3 +126,59 @@ def test_other_systems_attach_over_dbus_when_inkscape_is_on_the_bus(running_inks
 
     assert isinstance(chosen, LiveInkscape)
     assert not SvgDocument.load(document).has("c1")
+
+
+class WindowlessBus(LiveInkscape):
+    """Inkscape as it looks over D-Bus on macOS and Windows: app and document actions, no window objects."""
+
+    APP_ACTIONS = {"export-filename": "s", "export-type": "s", "export-overwrite": "b", "export-do": "",
+                   "select-clear": "", "file-rebase": "b", "object-set-attribute": "s"}
+    DOCUMENT_ACTIONS = {"zoom-page": ""}
+
+    def __init__(self):
+        super().__init__(Inkscape.__new__(Inkscape), gdbus="gdbus", timeout=5)
+        self.activated: list[tuple[str, str, str]] = []
+        self.export_to = ""
+
+    def _call(self, method: str, path: str, *args: str) -> str:
+        actions = self.APP_ACTIONS if path == "/org/inkscape/Inkscape" else self.DOCUMENT_ACTIONS
+        if method.endswith("Introspect"):
+            nodes = {"/org/inkscape/Inkscape/document": '<node name="1"/>'}
+            return nodes.get(path, "")
+        if method.endswith("List"):
+            return str(list(actions))
+        if method.endswith("Describe"):
+            return f"signature '{actions[args[0]]}'"
+
+        self.activated.append((path.rsplit("/", 1)[-1], args[0], args[1]))
+        if args[0] == "export-filename":
+            self.export_to = args[1][3:-3]
+        if args[0] == "export-do":
+            Path(self.export_to).write_text(DOC)
+
+        return "()"
+
+
+def test_without_window_actions_save_exports_over_the_file_and_reload_rebases(tmp_path):
+    live = WindowlessBus()
+    target = tmp_path / "drawing.svg"
+
+    live.save(path=target)
+    assert target.read_text() == DOC
+    assert [name for _, name, _ in live.activated] == ["export-filename", "export-type", "export-overwrite",
+                                                       "export-do"]
+
+    live.activated.clear()
+    live.reload()
+    assert live.activated == [("Inkscape", "select-clear", "[]"), ("Inkscape", "file-rebase", "[<true>]")]
+
+    with pytest.raises(LiveError, match="live_pull"):
+        live.save()
+
+
+def test_actions_skip_the_missing_window_group():
+    live = WindowlessBus()
+
+    live.run(["zoom-page"])
+
+    assert live.activated == [("1", "zoom-page", "[]")]

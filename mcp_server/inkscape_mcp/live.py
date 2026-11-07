@@ -142,11 +142,26 @@ class LiveInkscape:
 
         return output
 
-    def save(self, window: int | None = None) -> None:
-        self.activate("document-save", target="window", number=window)
+    def save(self, window: int | None = None, path: Path | None = None) -> None:
+        """File > Save. Inkscape publishes window actions only on Linux, so elsewhere the open document is
+        exported as Inkscape SVG over its file at `path`."""
+        if self.windows():
+            self.activate("document-save", target="window", number=window)
+            return
+
+        if path is None:
+            raise LiveError("This Inkscape does not offer File > Save over D-Bus. Save in Inkscape, or use "
+                            "live_pull to copy the document to a file.")
+
+        self.export(path, "svg")
 
     def reload(self, window: int | None = None) -> None:
-        self.activate("document-revert", target="window", number=window)
+        """File > Revert, or reloading the file into the same document where window actions are missing."""
+        if self.windows():
+            self.activate("document-revert", target="window", number=window)
+            return
+
+        self.run(["select-clear", "file-rebase:true"])
 
     def open(self, path: Path) -> int | None:
         """Open a file in the running Inkscape, or start Inkscape with it. Returns the new window number."""
@@ -172,7 +187,13 @@ class LiveInkscape:
             raise LiveError(f"Unknown target '{target}'. Use one of: {', '.join(TARGETS)}.")
 
         for kind in ([target] if target else TARGETS):
-            path = self._object_path(kind, number)
+            try:
+                path = self._object_path(kind, number)
+            except LiveError:
+                if target:
+                    raise
+                continue
+
             if action in self._action_names(path):
                 return path
 

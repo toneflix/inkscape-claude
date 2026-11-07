@@ -139,7 +139,7 @@ class MarkingLive:
     def run(self, actions, window=None):
         self.actions += actions
 
-    def save(self, window=None):
+    def save(self, window=None, path=None):
         doc = SvgDocument.load(self.path)
         for element_id in self.selected:
             doc.find(element_id).set("data-claude-selected", "1")
