@@ -193,6 +193,7 @@ class MacPackager(Packager):
         shutil.rmtree(root, ignore_errors=True)
         shutil.copytree(self.stage.root, root / self.payload_folder)
         shutil.copy2(INSTALLER / "macos" / "uninstall.sh", root / self.payload_folder / "uninstall.sh")
+        shutil.copy2(ROOT / "scripts" / "macos-dbus.sh", root / self.payload_folder / "macos-dbus.sh")
 
         scripts = INSTALLER / "macos" / "scripts"
         for script in scripts.iterdir():

@@ -135,8 +135,16 @@ How Claude reaches the window depends on the system:
   - Linux: works out of the box on most desktops (`gdbus` is part of GLib).
   - Windows: Inkscape starts a session bus itself and ships `gdbus.exe` next to `inkscape.exe`, so it should
     work with nothing to install.
-  - macOS: install D-Bus and GLib with Homebrew, start the bus, then start Inkscape:
-    `brew install dbus glib && brew services start dbus`.
+  - macOS: install D-Bus and GLib with Homebrew, run the setup script once, then quit and reopen Inkscape:
+    ```bash
+    brew install dbus glib
+    sh scripts/macos-dbus.sh          # starts a bus at login and tells apps opened from Finder where it is
+    sh scripts/macos-dbus.sh status   # says whether Inkscape is on the bus
+    ```
+    The macOS installer does all of this for you when Homebrew is installed: it installs dbus and glib if they
+    are missing, then runs the script. `brew services start dbus` is not enough: GLib, which Inkscape uses, only finds a bus on macOS through
+    `DBUS_SESSION_BUS_ADDRESS`, which the script sets for apps with `launchctl setenv`. Undo it with
+    `sh scripts/macos-dbus.sh remove`.
 - **Shell** (the fallback, or `INKSCAPE_MCP_LIVE=shell`): when no Inkscape answers on D-Bus, Claude opens the
   document itself with `live_open`. That starts Inkscape with its interactive shell attached, which Claude
   uses to run actions, save and reload. Work in that window. It is saved and closed when the MCP server
