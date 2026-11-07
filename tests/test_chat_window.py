@@ -109,6 +109,9 @@ def test_settings_are_saved_and_used(chat, tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "path", staticmethod(lambda: config))
 
     dialog = SettingsDialog(window.window, window.session)
+    dialog.backend.set_active_id("claude-code")
+    assert not dialog.api_key.get_sensitive(), "no key is needed for Claude Code"
+    dialog.backend.set_active_id("api")
     dialog.model.set_text("claude-sonnet-5-5")
     dialog.effort.set_active_id("low")
     dialog.api_key.set_text("sk-ant-new")
@@ -117,6 +120,16 @@ def test_settings_are_saved_and_used(chat, tmp_path, monkeypatch):
 
     client = window.session.client
     assert (client.model, client.effort, client.api_key) == ("claude-sonnet-5-5", "low", "sk-ant-new")
-    assert json.loads(config.read_text()) == {"model": "claude-sonnet-5-5", "effort": "low", "api_key": "sk-ant-new"}
+    assert json.loads(config.read_text()) == {"model": "claude-sonnet-5-5", "effort": "low", "backend": "api",
+                                              "api_key": "sk-ant-new"}
     assert config.stat().st_mode & 0o777 == 0o600
-    assert Config.chat_settings() == {"model": "claude-sonnet-5-5", "effort": "low"}
+    assert Config.chat_settings() == {"model": "claude-sonnet-5-5", "effort": "low", "backend": "api",
+                                      "claude_path": None}
+
+    dialog = SettingsDialog(window.window, window.session)
+    dialog.backend.set_active_id("claude-code")
+    dialog.save()
+    dialog.dialog.destroy()
+
+    assert window.session.backend == "claude-code" and not window.session.needs_key
+    assert Config.chat_settings()["backend"] == "claude-code"

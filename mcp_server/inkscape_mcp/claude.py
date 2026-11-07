@@ -17,6 +17,7 @@ DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 KEY_REJECTED = "The API key was rejected. Check the key you configured."
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+BACKENDS = ("api", "claude-code")
 
 
 class ClaudeError(RuntimeError):
@@ -25,7 +26,7 @@ class ClaudeError(RuntimeError):
 
 class Config:
     """Settings shared by the extension and the chat: the API key (explicit value, then ANTHROPIC_API_KEY, then
-    the config file), and the chat's model and effort."""
+    the config file), and the chat's model, effort and backend (an API key, or the `claude` command)."""
 
     @staticmethod
     def path() -> Path:
@@ -56,11 +57,14 @@ class Config:
         path.chmod(0o600)
 
     @classmethod
-    def chat_settings(cls) -> dict[str, str]:
+    def chat_settings(cls) -> dict[str, str | None]:
+        """Model, effort, backend (None when never chosen) and claude_path (None when not set)."""
         data = cls.load()
         effort = data.get("effort") if data.get("effort") in EFFORTS else "medium"
+        backend = data.get("backend") if data.get("backend") in BACKENDS else None
 
-        return {"model": data.get("model") or DEFAULT_MODEL, "effort": effort}
+        return {"model": data.get("model") or DEFAULT_MODEL, "effort": effort, "backend": backend,
+                "claude_path": data.get("claude_path") or None}
 
     @classmethod
     def find_api_key(cls, explicit: str | None = None) -> str:

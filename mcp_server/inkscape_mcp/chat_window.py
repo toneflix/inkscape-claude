@@ -16,7 +16,7 @@ except (ImportError, ValueError):
     Gtk = None
 
 from .chat import EXPECTED_ERRORS, ChatSession
-from .claude import EFFORTS, ClaudeError, Config
+from .claude import BACKENDS, EFFORTS, ClaudeError, Config
 
 STYLE = b"""
 .bubble { padding: 8px 10px; border-radius: 8px; }
@@ -33,9 +33,12 @@ PREVIEW_WIDTH = 340
 EFFORT_LABELS = {"low": "Low (fastest)", "medium": "Medium (default)", "high": "High", "xhigh": "Extra high",
                  "max": "Max (slowest)"}
 
+BACKEND_LABELS = {"api": "API key", "claude-code": "Claude Code (your subscription)"}
+
 
 class SettingsDialog:
-    """Model, effort and API key, saved to the config file that Ask Claude also reads."""
+    """How to reach Claude (API key or Claude Code), model, effort and API key, saved to the config file that
+    Ask Claude also reads."""
 
     def __init__(self, parent, session: ChatSession):
         self.session = session
@@ -43,6 +46,11 @@ class SettingsDialog:
         self.dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
         self.dialog.set_default_response(Gtk.ResponseType.OK)
 
+        self.backend = Gtk.ComboBoxText()
+        for backend in BACKENDS:
+            self.backend.append(backend, BACKEND_LABELS[backend])
+        self.backend.set_active_id(session.backend)
+        self.backend.connect("changed", lambda *_: self.api_key.set_sensitive(self.backend.get_active_id() == "api"))
         self.model = Gtk.Entry(text=session.client.model, hexpand=True, activates_default=True)
         self.effort = Gtk.ComboBoxText()
         for effort in EFFORTS:
@@ -50,24 +58,26 @@ class SettingsDialog:
         self.effort.set_active_id(session.client.effort)
         self.api_key = Gtk.Entry(visibility=False, activates_default=True,
                                  placeholder_text="Key in use; type to replace" if session.client.api_key
-                                 else "sk-ant-...")
+                                 else "sk-ant-...", sensitive=session.backend == "api")
 
         note = Gtk.Label(xalign=0, wrap=True, max_width_chars=48,
-                         label=f"Saved in {Config.path()}, which Ask Claude also uses. "
-                               "Get a key from platform.claude.com.")
+                         label="Claude Code uses the account you signed in with in the `claude` command, such as "
+                               "a Pro or Max subscription. An API key comes from platform.claude.com. "
+                               f"Saved in {Config.path()}, which Ask Claude also uses.")
         note.get_style_context().add_class("steps")
 
         grid = Gtk.Grid(row_spacing=8, column_spacing=10, margin=12)
-        for row, (text, widget) in enumerate((("Model", self.model), ("Effort", self.effort),
-                                              ("API key", self.api_key))):
+        rows = (("Connect with", self.backend), ("Model", self.model), ("Effort", self.effort),
+                ("API key", self.api_key))
+        for row, (text, widget) in enumerate(rows):
             grid.attach(Gtk.Label(label=text, xalign=0), 0, row, 1, 1)
             grid.attach(widget, 1, row, 1, 1)
-        grid.attach(note, 0, 3, 2, 1)
+        grid.attach(note, 0, len(rows), 2, 1)
         self.dialog.get_content_area().add(grid)
 
     def run(self) -> bool:
         self.dialog.show_all()
-        if not self.session.client.api_key:
+        if self.session.needs_key:
             self.api_key.grab_focus()
         saved = self.dialog.run() == Gtk.ResponseType.OK
         if saved:
@@ -79,10 +89,11 @@ class SettingsDialog:
     def save(self) -> None:
         model = self.model.get_text().strip()
         effort = self.effort.get_active_id() or "medium"
+        backend = self.backend.get_active_id() or "api"
         api_key = self.api_key.get_text().strip()
 
-        self.session.configure(model, effort, api_key or None)
-        values = {"model": self.session.client.model, "effort": self.session.client.effort}
+        self.session.configure(model, effort, api_key or None, backend)
+        values = {"model": self.session.client.model, "effort": self.session.client.effort, "backend": backend}
         if api_key:
             values["api_key"] = api_key
         Config.save(**values)
@@ -146,9 +157,11 @@ class ChatWindow:
 
         self.was_live = session.live_enabled
         self.add_message("system", "Ask for a change to the drawing. Enter sends, Shift+Enter adds a line.")
+        if session.backend == "claude-code":
+            self.add_message("system", self.describe_settings())
         self.refresh_badge()
         GLib.timeout_add_seconds(2, self.watch_inkscape)
-        if not session.client.api_key:
+        if session.needs_key:
             GLib.idle_add(self.ask_for_key)
 
     @staticmethod
@@ -168,14 +181,21 @@ class ChatWindow:
     def open_settings(self) -> bool:
         try:
             if SettingsDialog(self.window, self.session).run():
-                self.add_message("system", f"Using {self.session.client.model} at {self.session.client.effort} effort.")
+                self.add_message("system", self.describe_settings())
         except (OSError, ClaudeError) as exc:
             self.add_message("system", f"Error: could not save the settings: {exc}")
 
         return False
 
+    def describe_settings(self) -> str:
+        client = self.session.client
+        via = "Claude Code" if self.session.backend == "claude-code" else "your API key"
+
+        return f"Using {client.model} at {client.effort} effort, through {via}."
+
     def ask_for_key(self) -> bool:
-        self.add_message("system", "Add your Claude API key in Settings to start.")
+        self.add_message("system", "Add your Claude API key in Settings, or choose Claude Code to use your "
+                                   "subscription.")
 
         return self.open_settings()
 
@@ -208,7 +228,7 @@ class ChatWindow:
                 result = task()
             except EXPECTED_ERRORS as exc:
                 result = {"role": "system", "text": f"Error: {exc}"}
-            GLib.idle_add(self.finish, result)
+            GLib.idle_add(self.finish, result, priority=GLib.PRIORITY_DEFAULT)
 
         threading.Thread(target=background, daemon=True).start()
 
