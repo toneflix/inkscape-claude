@@ -15,6 +15,31 @@ Three ways for Claude to work with Inkscape 1.x:
 The badge above was drawn through the MCP server by `examples/demo_drawing.py`, using the same tool calls
 Claude makes: create a page, add shapes, a path intersection, page alignment, then export.
 
+## Installers
+
+Each [GitHub release](https://github.com/toneflix/inkscape-claude/releases) has an installer for Windows, macOS
+and Linux. It puts the extension (Ask Claude and Open Claude Chat) in your Inkscape extensions folder and adds a
+standalone `inkscape-mcp` command, so nothing needs pip or a separate Python. Restart Inkscape afterwards.
+
+| System | File | Installs to |
+| --- | --- | --- |
+| Windows | `inkscape-claude-<version>-windows-x86_64.exe` | `%APPDATA%\inkscape\extensions\claude`, and `inkscape-mcp.exe` in `%LOCALAPPDATA%\Programs\Inkscape Claude` (added to your `PATH`). No administrator rights needed; remove it from Installed apps. |
+| macOS | `inkscape-claude-<version>-macos-arm64.pkg` (Apple silicon) or `-x86_64.pkg` (Intel) | The signed-in user's Inkscape extensions folder, and `/usr/local/bin/inkscape-mcp`. Remove it with `sudo sh "/Library/Application Support/Inkscape Claude/uninstall.sh"`. |
+| Linux | `inkscape-claude-<version>-linux-x86_64.run` | `~/.config/inkscape/extensions/claude` (plus the Flatpak and Snap Inkscape folders when they exist) and `~/.local/bin/inkscape-mcp`. Run it with `sh`; `--uninstall` removes it. |
+
+The installers are not code-signed yet, so Windows SmartScreen asks you to confirm (**More info > Run anyway**)
+and macOS blocks the first open (**System Settings > Privacy & Security > Open Anyway**).
+
+Then connect the MCP server to Claude, for example `claude mcp add inkscape -- inkscape-mcp` (see below).
+
+Releases are built by `.github/workflows/installers.yml` when a `v*` tag is pushed, for example
+`git tag v0.1.0 && git push origin v0.1.0`. To build the installer for your own system:
+
+```bash
+pip install pyinstaller ./mcp_server       # Windows also needs Inno Setup 6
+python scripts/build_installer.py          # writes dist/inkscape-claude-<version>-<system>-<arch>.<exe|pkg|run>
+```
+
 ## 1. MCP server
 
 ### Install
