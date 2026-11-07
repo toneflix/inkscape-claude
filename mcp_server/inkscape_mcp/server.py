@@ -12,6 +12,7 @@ from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .cli import Inkscape, InkscapeError
+from .live import LiveError, LiveInkscape
 from .svgdoc import SvgDocument, SvgError
 from .workspace import Workspace
 
@@ -24,10 +25,11 @@ BOOLEAN_ACTIONS = {"union": "path-union", "difference": "path-difference", "inte
 
 SINGLE_RESULT_OPERATIONS = {"union", "difference", "intersection", "exclusion", "combine"}
 
-EXPECTED_ERRORS = (ValueError, OSError, SvgError, InkscapeError)
+EXPECTED_ERRORS = (ValueError, OSError, SvgError, InkscapeError, LiveError)
 
 workspace = Workspace.from_env()
 inkscape = Inkscape.from_env()
+live = LiveInkscape(inkscape)
 
 server = MCPServer(
     name="inkscape",
@@ -38,7 +40,9 @@ server = MCPServer(
         "replace_element, then call render_preview to look at the result before you say it is done. "
         "Use boolean_operation, align_objects or run_actions for things that are easier for Inkscape "
         "to do than to write by hand, and export_document for PNG/PDF/EPS output. "
-        "Every edit keeps a snapshot, so undo_last_change can revert a mistake."
+        "Every edit keeps a snapshot, so undo_last_change can revert a mistake. "
+        "On Linux the live_* tools work on the Inkscape window the person has open: live_snapshot shows it, "
+        "live_run_actions changes it directly, and for file edits call live_save, edit the file, then live_reload."
     ),
 )
 
@@ -324,6 +328,80 @@ def open_in_inkscape(path: str) -> str:
                      start_new_session=True)
 
     return f"Opened {workspace.relative(source)} in Inkscape."
+
+
+@tool
+def live_status() -> str:
+    """Report whether a running Inkscape window can be controlled live, and its window/document numbers."""
+    if not live.available():
+        try:
+            live.require()
+        except LiveError as exc:
+            return f"Live control unavailable: {exc}"
+
+    return f"Live control available. Windows: {live.windows()}. Documents: {live.documents()}."
+
+
+@tool
+def live_open(path: str) -> str:
+    """Open a workspace document in the running Inkscape (starting Inkscape if needed) for live editing."""
+    source = workspace.resolve(path)
+    window = live.open(source)
+    if window is None:
+        return f"Asked Inkscape to open {workspace.relative(source)}, but no new window showed up on D-Bus."
+
+    return f"Opened {workspace.relative(source)} in Inkscape window {window}."
+
+
+@tool
+def live_run_actions(actions: list[str], window: int | None = None) -> str:
+    """Run Inkscape actions in the open window, where the person sees the result immediately.
+
+    Same syntax as run_actions, e.g. ["select-by-id:rect1,circle2", "path-union"] or
+    ["select-all:all", "object-align:hcenter page"]. Ctrl+Z in Inkscape undoes them.
+    The newest window is used unless `window` is given (see live_status).
+    """
+    done = live.run(actions, window)
+
+    return f"Ran {len(done)} action(s) in Inkscape: {'; '.join(done)}"
+
+
+@tool
+def live_snapshot(width: int = 800) -> Image:
+    """Render what is currently in the active Inkscape window to a PNG, including unsaved changes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        output = live.export(Path(tmp) / "live.png", "png", width=width)
+
+        return Image(data=output.read_bytes(), format="png")
+
+
+@tool
+def live_pull(path: str) -> str:
+    """Copy the document in the active Inkscape window (with unsaved changes) to a workspace file."""
+    target = workspace.resolve(path, must_exist=False)
+    workspace.history.snapshot(target)
+    live.export(target, "svg")
+
+    return f"Saved the live document to {workspace.relative(target)}\n\n{SvgDocument.load(target).outline()}"
+
+
+@tool
+def live_save(window: int | None = None) -> str:
+    """Save the open document to its own file (File > Save). Do this before editing that file with other tools."""
+    live.save(window)
+
+    return "Saved the document in Inkscape."
+
+
+@tool
+def live_reload(window: int | None = None) -> str:
+    """Reload the open document from disk (File > Revert) so Inkscape shows edits made to its file.
+
+    Unsaved changes in the window would be lost and Inkscape may ask first, so call live_save before editing.
+    """
+    live.reload(window)
+
+    return "Reloaded the document in Inkscape."
 
 
 def main() -> None:
