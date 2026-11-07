@@ -33,6 +33,9 @@ server = MCPServer(
         "replace_element, then call render_preview to look at the result before you say it is done. "
         "Use boolean_operation, align_objects or run_actions for things that are easier for Inkscape "
         "to do than to write by hand, and export_document for PNG/PDF/EPS output. "
+        "Documents can have several pages (artboards) on one canvas: read_document and list_pages show them and "
+        "what sits on each; add_page, update_page, delete_page and move_to_page change them, and render_preview "
+        "and export_document take a page. "
         "Every edit keeps a snapshot, so undo_last_change can revert a mistake. "
         "On Linux the live_* tools work on the Inkscape window the person has open: live_snapshot shows it, "
         "live_run_actions changes it directly, and for file edits call live_save, edit the file, then live_reload."
@@ -86,11 +89,13 @@ def list_documents() -> str:
 
 @tool
 def create_document(path: str, width: float = 800, height: float = 600, units: str = "px",
-                    background: str | None = None, svg: str | None = None, overwrite: bool = False) -> str:
+                    background: str | None = None, svg: str | None = None, overwrite: bool = False,
+                    pages: int = 1) -> str:
     """Create a new SVG document.
 
     Either pass `svg` with a complete SVG document, or leave it empty to get a blank page of
     `width` x `height` with one Inkscape layer (id "layer1"). `background` is an optional fill color.
+    `pages` above 1 adds more pages of the same size side by side.
     """
     target = workspace.resolve(path, must_exist=False)
     if target.suffix.lower() != ".svg":
@@ -99,6 +104,8 @@ def create_document(path: str, width: float = 800, height: float = 600, units: s
         raise FileExistsError(f"'{workspace.relative(target)}' already exists. Pass overwrite=true to replace it.")
 
     doc = SvgDocument.parse(svg) if svg else SvgDocument.blank(width, height, units, background)
+    for _ in range(max(int(pages), 1) - 1):
+        doc.pages.add()
     operations.write(target, doc)
 
     return f"Created {workspace.relative(target)}\n\n{doc.outline()}"
@@ -109,7 +116,8 @@ def read_document(path: str, mode: Literal["outline", "full"] = "outline", with_
     """Read a document.
 
     mode="outline" gives a compact tree of elements with ids, labels, fills and text (cheap).
-    mode="full" returns the raw SVG source. with_bboxes adds Inkscape-measured bounding boxes.
+    mode="full" returns the raw SVG source. The outline starts with the pages (artboards). with_bboxes adds
+    Inkscape-measured bounding boxes and the page each element is on.
     """
     source = workspace.resolve(path)
     if mode == "full":
@@ -192,10 +200,53 @@ def undo_last_change(path: str) -> str:
 
 
 @tool
-def render_preview(path: str, width: int = 800, element_id: str | None = None,
+def list_pages(path: str) -> str:
+    """List the pages (artboards): number, id, label, position and size in user units, and the objects on each."""
+    return operations.pages(workspace.resolve(path))
+
+
+@tool
+def add_page(path: str, width: float | None = None, height: float | None = None, x: float | None = None,
+             y: float | None = None, label: str | None = None) -> str:
+    """Add a page. By default it copies the last page's size and goes to its right."""
+    page = operations.add_page(workspace.resolve(path), width, height, x, y, label)
+
+    return f"Added {page.describe()}"
+
+
+@tool
+def update_page(path: str, page: str, label: str | None = None, x: float | None = None, y: float | None = None,
+                width: float | None = None, height: float | None = None) -> str:
+    """Rename, move or resize a page, named by number (from 1), id or label. Objects stay where they are."""
+    changed = operations.update_page(workspace.resolve(path), page, label, x, y, width, height)
+
+    return f"Updated {changed.describe()}"
+
+
+@tool
+def delete_page(path: str, page: str) -> str:
+    """Remove a page (by number, id or label). The objects on it stay on the canvas."""
+    source = workspace.resolve(path)
+    removed = operations.delete_page(source, page)
+
+    return f"Deleted page {removed.number}.\n\n{operations.pages(source)}"
+
+
+@tool
+def move_to_page(path: str, element_ids: list[str], page: str) -> str:
+    """Move objects to another page, keeping their position on the page. Objects on no page are centred."""
+    source = workspace.resolve(path)
+    target = operations.move_to_page(source, element_ids, page)
+
+    return f"Moved {', '.join(element_ids)} to page {target.number}.\n\n{operations.pages(source)}"
+
+
+@tool
+def render_preview(path: str, width: int = 800, element_id: str | None = None, page: str | None = None,
                    background: str = "#ffffff") -> Image:
-    """Render the document (or one element) to a PNG so you can see it. Use this to check your work."""
-    png = operations.preview(workspace.resolve(path), width, element_id, background)
+    """Render every page (default), one page, or one element to a PNG so you can see it. Use this to check
+    your work."""
+    png = operations.preview(workspace.resolve(path), width, element_id, background, page)
 
     return Image(data=png, format="png")
 
@@ -204,17 +255,21 @@ def render_preview(path: str, width: int = 800, element_id: str | None = None,
 def export_document(path: str, output_path: str,
                     format: Literal["png", "pdf", "eps", "ps", "svg", "emf", "wmf"] | None = None,
                     dpi: float | None = None, width: int | None = None, height: int | None = None,
-                    element_id: str | None = None, area: Literal["page", "drawing"] = "page",
+                    element_id: str | None = None, page: str | None = None,
+                    area: Literal["page", "pages", "drawing"] = "page",
                     background: str | None = None, text_to_path: bool = False, plain_svg: bool = False) -> str:
     """Export with Inkscape to PNG, PDF, EPS, PS, EMF, WMF or plain SVG.
 
-    The format defaults to the output file's extension. Set element_id to export one object only.
+    The format defaults to the output file's extension. Set element_id to export one object only, or page
+    (number, id or label) for one page. area "page" is the first page, "pages" all pages together, "drawing"
+    the bounding box of everything drawn.
     """
     source = workspace.resolve(path)
     output = workspace.resolve(output_path, must_exist=False)
 
     inkscape.export(source, output, format, dpi=dpi, width=width, height=height, object_id=element_id,
-                    area=area, background=background, text_to_path=text_to_path, plain_svg=plain_svg)
+                    area=operations.area(source, page, area), background=background, text_to_path=text_to_path,
+                    plain_svg=plain_svg)
 
     return f"Exported {workspace.relative(output)} ({output.stat().st_size} bytes)"
 
@@ -256,17 +311,20 @@ def align_objects(path: str, element_ids: list[str],
                   horizontal: Literal["left", "hcenter", "right"] | None = None,
                   vertical: Literal["top", "vcenter", "bottom"] | None = None,
                   relative_to: Literal["page", "drawing", "selection", "first", "last", "biggest",
-                                       "smallest"] = "page") -> str:
-    """Align elements with Inkscape's Align tool, e.g. horizontal="hcenter", vertical="vcenter", relative_to="page"."""
+                                       "smallest"] = "page", page: str | None = None) -> str:
+    """Align elements with Inkscape's Align tool, e.g. horizontal="hcenter", vertical="vcenter", relative_to="page".
+
+    With several pages, relative_to="page" aligns each object to the page it is on, or to `page` if given.
+    """
     source = workspace.resolve(path)
-    log = operations.align(source, element_ids, horizontal, vertical, relative_to)
+    log = operations.align(source, element_ids, horizontal, vertical, relative_to, page)
 
     return saved_message(f"Aligned {', '.join(element_ids)}", source, log)
 
 
 @tool
 def get_bounding_boxes(path: str, element_ids: list[str] | None = None) -> str:
-    """Inkscape-measured bounding boxes (x, y, width, height in user units) for elements."""
+    """Inkscape-measured bounding boxes for elements: x, y, width, height in user units, like page positions."""
     return operations.bounding_boxes(workspace.resolve(path), element_ids)
 
 

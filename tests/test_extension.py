@@ -4,8 +4,10 @@ Checks both the SDK path (streaming) and the standard-library fallback, and all 
 Run: python -m pytest tests/test_extension.py
 """
 
+import base64
 import json
 import os
+import struct
 import subprocess
 import sys
 import threading
@@ -117,14 +119,15 @@ def fake_api():
     srv.shutdown()
 
 
-def run_ext(tmp_path, base_url, scope, ids=(), use_sdk=True, method="rewrite"):
+def run_ext(tmp_path, base_url, scope, ids=(), use_sdk=True, method="rewrite", doc=DOC, send_image=False):
     src = tmp_path / "in.svg"
-    src.write_text(DOC)
+    src.write_text(doc)
     FakeClaude.reply = REPLIES.get(scope, "Done.")
     FakeClaude.requests.clear()
     env = {**os.environ, "ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_API_KEY": "sk-test",
            "INKSCAPE_CLAUDE_NO_SDK": "0" if use_sdk else "1"}
-    args = [sys.executable, str(EXT), f"--scope={scope}", "--prompt=Do the thing\\nplease", "--send_image=false",
+    args = [sys.executable, str(EXT), f"--scope={scope}", "--prompt=Do the thing\\nplease",
+            f"--send_image={str(send_image).lower()}",
             f"--method={method}"]
     args += [f"--id={i}" for i in ids]
     proc = subprocess.run(args + [str(src)], capture_output=True, text=True, env=env, timeout=180)
@@ -198,6 +201,24 @@ def test_tool_method_edits_step_by_step(tmp_path, fake_api, use_sdk):
     assert root.xpath("//*[@id='r1']")[0].get("fill") == "red", "result kept the bottom object's style"
     assert root.xpath("//*[@id='r2']"), "untouched element kept"
     assert "Joined the red square" in err and "(5 step(s))" in err
+
+
+def test_rewrite_knows_about_pages(tmp_path, fake_api):
+    pages = ('<inkscape:page id="p1" x="0" y="0" width="200" height="200" inkscape:label="Front"/>'
+             '<inkscape:page id="p2" x="220" y="0" width="200" height="200" inkscape:label="Back"/>')
+    doc = DOC.replace('<sodipodi:namedview id="nv1" pagecolor="#ffffff"/>',
+                      f'<sodipodi:namedview id="nv1" pagecolor="#ffffff">{pages}</sodipodi:namedview>')
+    doc = doc.replace('id="r2" x="100"', 'id="r2" x="300"')
+
+    root, _, req = run_ext(tmp_path, fake_api, "selection", ids=["r2"], doc=doc, send_image=True)
+    content = req["body"]["messages"][0]["content"]
+
+    assert "It has 2 pages (artboards)" in content[-1]["text"]
+    assert 'page 2 id=p2 "Back": x=220 y=0 size=200x200' in content[-1]["text"]
+    assert "The selection is on page 2." in content[-1]["text"]
+    png = base64.b64decode(content[0]["source"]["data"])
+    assert struct.unpack(">II", png[16:24]) == (1024, 488), "the picture covers both pages"
+    assert len(root.xpath("//*[local-name()='page']")) == 2, "pages survive the edit"
 
 
 def test_missing_key(tmp_path):
