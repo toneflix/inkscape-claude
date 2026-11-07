@@ -22,6 +22,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 from .agent import DrawingAgent, Step
+from .attachments import Attachment, Attachments
 from .claude import BACKENDS, DEFAULT_MODEL, EFFORTS, ClaudeClient, ClaudeError, Config
 from .claude_code import ClaudeCode, ClaudeCodeAgent
 from .cli import Inkscape, InkscapeError
@@ -29,6 +30,7 @@ from .live import LiveError, LiveInkscape
 from .operations import DocumentOperations
 from .shell import ShellInkscape, live_control
 from .svgdoc import SvgDocument, SvgError
+from .usage import Usage
 from .workspace import History
 
 PAGE = Path(__file__).with_name("chat.html")
@@ -52,6 +54,7 @@ class ChatSession:
         self.claude_path = claude_path
         self.history_dir = tempfile.TemporaryDirectory(prefix="inkscape-claude-chat-")
         self.operations = DocumentOperations(inkscape, History(root=Path(self.history_dir.name)))
+        self.attachments = Attachments(Path(self.history_dir.name) / "attachments")
         self.backend = backend
         self.agent = self.make_agent(client, backend)
         self.transcript: list[dict] = []
@@ -100,9 +103,10 @@ class ChatSession:
 
     def make_agent(self, client: ClaudeClient, backend: str) -> DrawingAgent | ClaudeCodeAgent:
         if backend == "claude-code":
-            return ClaudeCodeAgent(client, self.path, Path(self.history_dir.name), self.claude_path)
+            return ClaudeCodeAgent(client, self.path, Path(self.history_dir.name), self.claude_path,
+                                   attachments=self.attachments)
 
-        return DrawingAgent(client, self.operations, self.path)
+        return DrawingAgent(client, self.operations, self.path, attachments=self.attachments)
 
     @property
     def live_enabled(self) -> bool:
@@ -136,14 +140,24 @@ class ChatSession:
         if self.owns_window:
             self.live.close()
 
-    def state(self) -> dict:
-        return {"document": str(self.path), "live": self.live_enabled, "transcript": self.transcript}
+    @property
+    def usage(self) -> Usage:
+        return self.agent.usage
 
-    def send(self, text: str, on_event: Callable[[str, object], None] | None = None) -> dict:
-        """Runs one turn. on_event gets ("text", piece of the reply) as Claude writes and ("step", step dict)
-        after each tool call; the Inkscape window reloads after drawing changes, at most every
+    def state(self) -> dict:
+        return {"document": str(self.path), "live": self.live_enabled, "transcript": self.transcript,
+                "usage": self.usage.to_dict()}
+
+    def send(self, text: str, on_event: Callable[[str, object], None] | None = None,
+             images: list[Attachment] | None = None) -> dict:
+        """Runs one turn, with any attached images (from self.attachments) shown to Claude. on_event gets
+        ("text", piece of the reply) as Claude writes, ("step", step dict) after each tool call and ("usage",
+        usage dict) after each response; the Inkscape window reloads after drawing changes, at most every
         LIVE_RELOAD_SECONDS, and once more at the end."""
         text = text.strip()
+        images = images or []
+        if not text and images:
+            text = "Here is an image."
         if not text:
             raise ValueError("Type a message first.")
 
@@ -153,13 +167,14 @@ class ChatSession:
 
         with self.lock:
             selection = self.sync_from_inkscape()
-            self.transcript.append({"role": "user", "text": text})
+            names = [image.name for image in images]
+            self.transcript.append({"role": "user", "text": text, "images": names})
 
-            prompt = "\n".join([*self.notes, self.selection_note(selection), text]).strip()
+            prompt = "\n".join([*self.notes, self.selection_note(selection), self.images_note(names), text]).strip()
             self.notes.clear()
             self.listen(on_event)
             try:
-                result = self.agent.run(prompt)
+                result = self.agent.run(prompt, [image.block() for image in images])
             except EXPECTED_ERRORS as exc:
                 self.transcript.append({"role": "system", "text": f"Error: {exc}"})
                 raise
@@ -173,7 +188,7 @@ class ChatSession:
 
             self.focus = selection
 
-            return {**entry, "preview": self.preview()}
+            return {**entry, "preview": self.preview(), "usage": self.usage.to_dict()}
 
     def listen(self, on_event: Callable[[str, object], None] | None) -> None:
         """Connects the agent's text and step callbacks to on_event, or disconnects them."""
@@ -193,6 +208,7 @@ class ChatSession:
 
         self.agent.on_step = on_step if on_event or self.live_enabled else None
         self.agent.on_text = (lambda piece: on_event("text", piece)) if on_event else None
+        self.agent.on_usage = (lambda usage: on_event("usage", usage.to_dict())) if on_event else None
 
     def undo(self) -> dict:
         with self.lock:
@@ -211,6 +227,14 @@ class ChatSession:
         png = self.operations.preview(self.path, 600, focus=self.focus or None)
 
         return base64.b64encode(png).decode("ascii")
+
+    @staticmethod
+    def images_note(names: list[str]) -> str:
+        if not names:
+            return ""
+
+        return (f"(Attached images: {', '.join(names)}. They are for context; place_image puts one in the drawing "
+                "if I ask for that.)")
 
     @staticmethod
     def selection_note(selection: list[str]) -> str:
@@ -256,10 +280,11 @@ class Progress:
         self.lock = threading.Lock()
         self.text = ""
         self.steps: list[dict] = []
+        self.usage: dict | None = None
 
     def reset(self) -> None:
         with self.lock:
-            self.text, self.steps = "", []
+            self.text, self.steps, self.usage = "", [], None
 
     def update(self, kind: str, payload) -> None:
         with self.lock:
@@ -267,10 +292,12 @@ class Progress:
                 self.text += str(payload)
             elif kind == "step":
                 self.steps.append(payload)
+            elif kind == "usage":
+                self.usage = payload
 
     def snapshot(self) -> dict:
         with self.lock:
-            return {"text": self.text, "steps": list(self.steps)}
+            return {"text": self.text, "steps": list(self.steps), "usage": self.usage}
 
 
 class ChatHandler(BaseHTTPRequestHandler):
@@ -319,9 +346,12 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.reply(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
     def send_message(self, body: dict) -> dict:
+        images = [self.session.attachments.add_data(str(image.get("name") or "image"),
+                                                    base64.b64decode(str(image.get("data", ""))))
+                  for image in body.get("images") or []]
         self.server.progress.reset()
 
-        return self.session.send(str(body.get("text", "")), self.server.progress.update)
+        return self.session.send(str(body.get("text", "")), self.server.progress.update, images)
 
     def authorized(self) -> bool:
         return secrets.compare_digest(self.headers.get("x-chat-token", ""), self.token)

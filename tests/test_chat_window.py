@@ -154,3 +154,39 @@ def test_the_answer_shows_while_it_is_written(chat):
     window.finish({"role": "assistant", "text": "Done."}, live)
 
     assert len(window.messages.get_children()) == rows, "the finished message takes the live one's place"
+
+
+def test_attached_images_and_usage_show_in_the_window(chat, tmp_path):
+    from gi.repository import Gtk
+    from test_images_usage import png
+
+    window, _ = chat
+    source = tmp_path / "sketch.png"
+    source.write_bytes(png(60, 30))
+
+    window.attach(source)
+    window.attach(tmp_path / "missing.png")
+
+    assert [image.name for image in window.pending.images] == ["sketch.png"]
+    assert window.pending.box.get_visible()
+    assert texts(window)[-1].startswith("Error: could not attach missing.png")
+
+    window.prompt.get_buffer().set_text("Add a box like this")
+    window.send()
+    wait_until_idle(window)
+
+    assert not window.pending.images and not window.pending.box.get_visible()
+    flows = [w for row in window.messages.get_children() for bubble in row.get_children()
+             for w in bubble.get_children() if isinstance(w, Gtk.FlowBox)]
+    assert len(flows) == 1, "the sent message shows its image"
+    assert "Attached images: sketch.png" in window.session.agent.messages[0]["content"][1]["text"]
+
+    window.usage.update({"context_tokens": 42000, "context_window": 1000000, "context_share": 0.042,
+                         "context_text": "Context: 42K of 1M (4%)",
+                         "limits": [{"name": "5-hour limit", "used": 0.95, "resets_at": None, "status": None}]})
+    labels = [child.get_text() for child in window.usage.box.get_children() if isinstance(child, Gtk.Label)]
+    bars = [child for child in window.usage.box.get_children() if isinstance(child, Gtk.LevelBar)]
+
+    assert window.usage.box.get_visible()
+    assert sorted(labels) == ["5-hour limit: 95% used", "Context: 42K of 1M (4%)"]
+    assert sorted(round(bar.get_value(), 3) for bar in bars) == [0.042, 0.95]

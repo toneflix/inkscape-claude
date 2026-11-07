@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Callable
 
 from .agent import SYSTEM_PROMPT, TOOLS, Step, TurnResult, summary
+from .attachments import Attachments
 from .bridge import SERVER_NAME
 from .claude import ClaudeClient, ClaudeError, Config
+from .usage import Limit, Usage, context_window
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 TOOL_PREFIX = f"mcp__{SERVER_NAME}__"
@@ -47,17 +49,22 @@ class ClaudeCode:
 
 class ClaudeCodeAgent:
     """Same interface as DrawingAgent, but each turn is one `claude -p` run with the drawing tools served by
-    the bridge. Claude Code keeps the conversation, resumed by session id."""
+    the bridge. Claude Code keeps the conversation, resumed by session id. A message with images goes in as
+    stream-json, the way the Agent SDK sends one."""
 
     def __init__(self, settings: ClaudeClient, path: Path, history: Path, binary: str | None = None,
-                 on_step: Callable[[Step], None] | None = None, on_text: Callable[[str], None] | None = None):
+                 on_step: Callable[[Step], None] | None = None, on_text: Callable[[str], None] | None = None,
+                 attachments: Attachments | None = None, on_usage: Callable[[Usage], None] | None = None):
         self.settings = settings
         self.path = path
         self.history = history
         self.binary = binary
         self.on_step = on_step
         self.on_text = on_text
+        self.attachments = attachments
+        self.on_usage = on_usage
         self.session_id: str | None = None
+        self.usage = Usage()
 
     @property
     def client(self) -> ClaudeClient:
@@ -65,18 +72,21 @@ class ClaudeCodeAgent:
 
     def mcp_config(self) -> str:
         env = {"PYTHONPATH": os.pathsep.join(filter(None, [str(PACKAGE_ROOT), os.environ.get("PYTHONPATH")]))}
-        server = {"command": sys.executable,
-                  "args": ["-m", "inkscape_mcp.bridge", str(self.path), "--history", str(self.history)],
-                  "env": env}
+        args = ["-m", "inkscape_mcp.bridge", str(self.path), "--history", str(self.history)]
+        if self.attachments:
+            args += ["--attachments", str(self.attachments.folder)]
+        server = {"command": sys.executable, "args": args, "env": env}
 
         return json.dumps({"mcpServers": {SERVER_NAME: server}})
 
-    def command(self, binary: str) -> list[str]:
+    def command(self, binary: str, structured: bool = False) -> list[str]:
         allowed = ",".join(TOOL_PREFIX + tool["name"] for tool in TOOLS)
         command = [binary, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
                    "--model", self.settings.model, "--effort", self.settings.effort,
                    "--append-system-prompt", SYSTEM_PROMPT, "--strict-mcp-config",
                    f"--mcp-config={self.mcp_config()}", f"--allowedTools={allowed}", "--tools="]
+        if structured:
+            command += ["--input-format", "stream-json"]
         if self.session_id:
             command += ["--resume", self.session_id]
 
@@ -87,6 +97,14 @@ class ClaudeCodeAgent:
         """Without ANTHROPIC_API_KEY, so Claude Code uses the signed-in subscription."""
         return {name: value for name, value in os.environ.items() if name != "ANTHROPIC_API_KEY"}
 
+    @staticmethod
+    def message(prompt: str, context: list[dict]) -> str:
+        """One stream-json user message with the context blocks (such as images) before the prompt."""
+        content = [*context, {"type": "text", "text": prompt}]
+
+        return json.dumps({"type": "user", "message": {"role": "user", "content": content},
+                           "parent_tool_use_id": None, "session_id": ""}) + "\n"
+
     def run(self, prompt: str, context: list[dict] | None = None) -> TurnResult:
         binary = ClaudeCode.find(self.binary)
         if binary is None:
@@ -96,14 +114,14 @@ class ClaudeCodeAgent:
 
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
-            process = subprocess.Popen(self.command(binary), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            process = subprocess.Popen(self.command(binary, bool(context)), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                                        cwd=self.history, env=self.environment(), creationflags=flags)
         except OSError as exc:
             raise ClaudeError(f"Could not start Claude Code ({binary}): {exc}") from exc
 
         try:
-            process.stdin.write(prompt)
+            process.stdin.write(self.message(prompt, context) if context else prompt)
             process.stdin.close()
             result, steps = self.read(process.stdout)
         except OSError:
@@ -133,6 +151,8 @@ class ClaudeCodeAgent:
             elif kind == "assistant":
                 for block in self.blocks(event, "tool_use"):
                     names[block.get("id")] = block.get("name", "").removeprefix(TOOL_PREFIX)
+                if not event.get("parent_tool_use_id"):
+                    self.record((event.get("message") or {}).get("usage"))
             elif kind == "user":
                 for block in self.blocks(event, "tool_result"):
                     step = Step(names.get(block.get("tool_use_id"), "tool"), self.result_text(block),
@@ -142,12 +162,35 @@ class ClaudeCodeAgent:
                         self.on_step(step)
             elif kind == "stream_event":
                 self.stream_text(event.get("event") or {})
+            elif kind == "rate_limit_event":
+                self.record(limits=Limit.from_claude_code(event.get("rate_limit_info") or {}))
             elif kind == "result":
                 result = event
+                self.record(window=self.window(event))
             if event.get("session_id"):
                 self.session_id = event["session_id"]
 
         return result, steps
+
+    def record(self, usage: dict | None = None, limits: list[Limit] | None = None, window: int | None = None) -> None:
+        if not (usage or limits or window):
+            return
+
+        self.usage.record(usage, limits, window or self.usage.context_window or context_window(self.settings.model))
+        if self.on_usage:
+            self.on_usage(self.usage)
+
+    def window(self, result: dict) -> int | None:
+        """The context window Claude Code reports for the model it used most in the turn."""
+        models = [entry for entry in (result.get("modelUsage") or {}).values() if isinstance(entry, dict)]
+        if not models:
+            return None
+
+        main = max(models, key=lambda entry: Usage.tokens({"input_tokens": entry.get("inputTokens"),
+                                                           "cache_read_input_tokens": entry.get("cacheReadInputTokens"),
+                                                           "output_tokens": entry.get("outputTokens")}))
+
+        return main.get("contextWindow") or None
 
     def stream_text(self, event: dict) -> None:
         delta = event.get("delta") or {}
