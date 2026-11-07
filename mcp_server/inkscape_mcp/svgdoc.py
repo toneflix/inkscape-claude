@@ -169,6 +169,14 @@ class SvgDocument:
     def to_string(self) -> str:
         return etree.tostring(self.tree, encoding="unicode")
 
+    def pop_marked(self, attribute: str) -> list[str]:
+        """Removes `attribute` wherever it is set and returns the ids of those elements, in document order."""
+        marked = self.root.xpath(f"//*[@{attribute}]")
+        for element in marked:
+            del element.attrib[attribute]
+
+        return [element.get("id") for element in marked if element.get("id")]
+
     def has(self, element_id: str) -> bool:
         return bool(self.root.xpath("//*[@id=$i]", i=element_id))
 
