@@ -99,8 +99,8 @@ class Inkscape:
 
     def export(self, svg_path: Path, output_path: Path, export_type: str | None = None, dpi: float | None = None,
                width: int | None = None, height: int | None = None, object_id: str | None = None,
-               area: str = "page", background: str | None = None, text_to_path: bool = False,
-               plain_svg: bool = False) -> str:
+               area: str | tuple[float, float, float, float] = "page", background: str | None = None,
+               text_to_path: bool = False, plain_svg: bool = False) -> str:
         export_type = (export_type or output_path.suffix.lstrip(".") or "png").lower()
         args = [str(svg_path), f"--export-filename={output_path}", f"--export-type={export_type}",
                 "--export-overwrite"]
@@ -114,6 +114,9 @@ class Inkscape:
 
         if object_id:
             args += [f"--export-id={object_id}", "--export-id-only"]
+        elif isinstance(area, tuple):
+            x, y, box_width, box_height = area
+            args.append(f"--export-area={x:g}:{y:g}:{x + box_width:g}:{y + box_height:g}")
         elif area == "drawing":
             args.append("--export-area-drawing")
         else:

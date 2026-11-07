@@ -16,13 +16,17 @@ SYSTEM_PROMPT = """You are an illustrator working in Inkscape on one SVG documen
 Carry out the person's request by editing the document with them.
 
 How to work:
-- Start with get_outline to see the elements, their ids and, if you need geometry, bounding boxes.
+- Start with get_outline to see the pages, the elements, their ids and, if you need geometry, bounding boxes.
+- The document can have several pages (artboards), each with a position and size on one shared canvas, in \
+user units like the rest of the SVG. Put new artwork inside the page it belongs to; get_pages lists what is on \
+each page. Use add_page, update_page and delete_page to change pages, and move_to_page to move objects between them.
 - Make focused edits: add_elements, update_element, replace_element and delete_elements for markup; \
 boolean_operation, align_objects and run_actions when Inkscape does the job better than hand-written geometry.
 - Keep the ids, labels and layers of anything you do not need to change. Give new elements short, descriptive ids.
 - Write valid SVG 1.1 that Inkscape can edit. No <script>, event handler attributes, <foreignObject> or \
 external URLs.
-- Before you finish, call render_preview once and fix anything that looks wrong.
+- Before you finish, call render_preview once (it shows every page, or one page if you pass page) and fix \
+anything that looks wrong.
 - When you are done, reply with one or two sentences saying what you changed."""
 
 EXPECTED_ERRORS = (ValueError, KeyError, TypeError, OSError, SvgError, InkscapeError)
@@ -34,11 +38,27 @@ def schema(properties: dict, required: list[str] | None = None) -> dict:
 
 ID_LIST = {"type": "array", "items": {"type": "string"}}
 STRING_MAP = {"type": "object", "additionalProperties": {"type": ["string", "null"]}}
+PAGE = {"type": ["string", "integer"], "description": "Page number (from 1), id or label."}
+NUMBER = {"type": "number"}
 
 TOOLS = [
     {"name": "get_outline", "description": "List the document's elements with ids, labels, fills and text. "
      "with_bboxes adds Inkscape-measured bounding boxes (x, y, width, height).",
      "input_schema": schema({"with_bboxes": {"type": "boolean"}})},
+    {"name": "get_pages", "description": "List the pages (artboards) with their number, id, label, position and "
+     "size, and the objects on each.", "input_schema": schema({})},
+    {"name": "add_page", "description": "Add a page. Without a position it goes to the right of the last page; "
+     "without a size it copies the last page's size.",
+     "input_schema": schema({"width": NUMBER, "height": NUMBER, "x": NUMBER, "y": NUMBER,
+                             "label": {"type": "string"}})},
+    {"name": "update_page", "description": "Rename, move or resize a page. Objects stay where they are.",
+     "input_schema": schema({"page": PAGE, "label": {"type": "string"}, "x": NUMBER, "y": NUMBER, "width": NUMBER,
+                             "height": NUMBER}, ["page"])},
+    {"name": "delete_page", "description": "Remove a page. Objects on it stay on the canvas.",
+     "input_schema": schema({"page": PAGE}, ["page"])},
+    {"name": "move_to_page", "description": "Move objects to another page, keeping their position on the page "
+     "(objects that are on no page are centred).",
+     "input_schema": schema({"element_ids": ID_LIST, "page": PAGE}, ["element_ids", "page"])},
     {"name": "get_element", "description": "Return the SVG source of one element.",
      "input_schema": schema({"element_id": {"type": "string"}}, ["element_id"])},
     {"name": "add_elements", "description": "Add SVG elements (a fragment such as '<rect .../><circle .../>') "
@@ -58,8 +78,9 @@ TOOLS = [
      "difference, cut and division the last object is the cutter. The result keeps the first object's style.",
      "input_schema": schema({"element_ids": ID_LIST, "operation": {"type": "string", "enum": list(BOOLEAN_ACTIONS)}},
                             ["element_ids", "operation"])},
-    {"name": "align_objects", "description": "Align elements with Inkscape's Align tool.",
-     "input_schema": schema({"element_ids": ID_LIST,
+    {"name": "align_objects", "description": "Align elements with Inkscape's Align tool. With relative_to page, "
+     "each object aligns to the page it is on, or to page if given.",
+     "input_schema": schema({"element_ids": ID_LIST, "page": PAGE,
                              "horizontal": {"type": "string", "enum": ["left", "hcenter", "right"]},
                              "vertical": {"type": "string", "enum": ["top", "vcenter", "bottom"]},
                              "relative_to": {"type": "string", "enum": ["page", "drawing", "selection", "first",
@@ -70,8 +91,8 @@ TOOLS = [
      "input_schema": schema({"actions": {"type": "array", "items": {"type": "string"}}}, ["actions"])},
     {"name": "get_bounding_boxes", "description": "Inkscape-measured bounding boxes for elements.",
      "input_schema": schema({"element_ids": ID_LIST})},
-    {"name": "render_preview", "description": "Render the page, or one element, to an image so you can see it.",
-     "input_schema": schema({"width": {"type": "integer"}, "element_id": {"type": "string"}})},
+    {"name": "render_preview", "description": "Render all pages, one page, or one element to an image so you can "
+     "see it.", "input_schema": schema({"width": {"type": "integer"}, "page": PAGE, "element_id": {"type": "string"}})},
     {"name": "undo_last_change", "description": "Revert the document to before the most recent edit.",
      "input_schema": schema({})},
 ]
@@ -158,6 +179,27 @@ class DrawingAgent:
     def tool_get_outline(self, with_bboxes: bool = False) -> str:
         return self.operations.outline(self.path, with_bboxes)
 
+    def tool_get_pages(self) -> str:
+        return self.operations.pages(self.path)
+
+    def tool_add_page(self, width: float | None = None, height: float | None = None, x: float | None = None,
+                      y: float | None = None, label: str | None = None) -> str:
+        return "Added " + self.operations.add_page(self.path, width, height, x, y, label).describe()
+
+    def tool_update_page(self, page: str | int, label: str | None = None, x: float | None = None,
+                         y: float | None = None, width: float | None = None, height: float | None = None) -> str:
+        return "Updated " + self.operations.update_page(self.path, page, label, x, y, width, height).describe()
+
+    def tool_delete_page(self, page: str | int) -> str:
+        removed = self.operations.delete_page(self.path, page)
+
+        return f"Deleted page {removed.number}.\n\n{self.operations.pages(self.path)}"
+
+    def tool_move_to_page(self, element_ids: list[str], page: str | int) -> str:
+        target = self.operations.move_to_page(self.path, element_ids, page)
+
+        return f"Moved {', '.join(element_ids)} to page {target.number}.\n\n{self.operations.pages(self.path)}"
+
     def tool_get_element(self, element_id: str) -> str:
         return self.operations.element(self.path, element_id)
 
@@ -182,8 +224,8 @@ class DrawingAgent:
         return f"Applied {operation}.\n\n{self.operations.outline(self.path)}"
 
     def tool_align_objects(self, element_ids: list[str], horizontal: str | None = None, vertical: str | None = None,
-                           relative_to: str = "page") -> str:
-        self.operations.align(self.path, element_ids, horizontal, vertical, relative_to)
+                           relative_to: str = "page", page: str | int | None = None) -> str:
+        self.operations.align(self.path, element_ids, horizontal, vertical, relative_to, page)
 
         return f"Aligned {', '.join(element_ids)}.\n\n{self.operations.bounding_boxes(self.path, element_ids)}"
 
@@ -195,8 +237,9 @@ class DrawingAgent:
     def tool_get_bounding_boxes(self, element_ids: list[str] | None = None) -> str:
         return self.operations.bounding_boxes(self.path, element_ids)
 
-    def tool_render_preview(self, width: int = 800, element_id: str | None = None) -> list[dict]:
-        png = self.operations.preview(self.path, min(int(width), 1600), element_id)
+    def tool_render_preview(self, width: int = 800, element_id: str | None = None,
+                            page: str | int | None = None) -> list[dict]:
+        png = self.operations.preview(self.path, min(int(width), 1600), element_id, page=page)
 
         return [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                              "data": base64.b64encode(png).decode("ascii")}}]
