@@ -212,11 +212,13 @@ class DrawingAgent:
     """Runs a conversation in which Claude edits `path` through tools. Keeps history across turns."""
 
     def __init__(self, client: ClaudeClient, operations: DocumentOperations, path: Path, max_steps: int = 40,
-                 on_step: Callable[[Step], None] | None = None, system: str = SYSTEM_PROMPT):
+                 on_step: Callable[[Step], None] | None = None, system: str = SYSTEM_PROMPT,
+                 on_text: Callable[[str], None] | None = None):
         self.client = client
         self.tools = DrawingTools(operations, path)
         self.max_steps = max_steps
         self.on_step = on_step
+        self.on_text = on_text
         self.system = system
         self.messages: list[dict] = []
 
@@ -225,7 +227,7 @@ class DrawingAgent:
         steps: list[Step] = []
 
         for number in range(1, self.max_steps + 2):
-            response = self.client.send(self.system, self.messages, TOOLS)
+            response = self.client.send(self.system, self.messages, TOOLS, on_text=self.on_text)
             self.messages.append({"role": "assistant", "content": response["content"]})
 
             if response.get("stop_reason") != "tool_use":

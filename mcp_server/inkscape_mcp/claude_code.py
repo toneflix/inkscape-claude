@@ -50,12 +50,13 @@ class ClaudeCodeAgent:
     the bridge. Claude Code keeps the conversation, resumed by session id."""
 
     def __init__(self, settings: ClaudeClient, path: Path, history: Path, binary: str | None = None,
-                 on_step: Callable[[Step], None] | None = None):
+                 on_step: Callable[[Step], None] | None = None, on_text: Callable[[str], None] | None = None):
         self.settings = settings
         self.path = path
         self.history = history
         self.binary = binary
         self.on_step = on_step
+        self.on_text = on_text
         self.session_id: str | None = None
 
     @property
@@ -72,7 +73,7 @@ class ClaudeCodeAgent:
 
     def command(self, binary: str) -> list[str]:
         allowed = ",".join(TOOL_PREFIX + tool["name"] for tool in TOOLS)
-        command = [binary, "-p", "--output-format", "stream-json", "--verbose",
+        command = [binary, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
                    "--model", self.settings.model, "--effort", self.settings.effort,
                    "--append-system-prompt", SYSTEM_PROMPT, "--strict-mcp-config",
                    f"--mcp-config={self.mcp_config()}", f"--allowedTools={allowed}", "--tools="]
@@ -139,12 +140,19 @@ class ClaudeCodeAgent:
                     steps.append(step)
                     if self.on_step:
                         self.on_step(step)
+            elif kind == "stream_event":
+                self.stream_text(event.get("event") or {})
             elif kind == "result":
                 result = event
             if event.get("session_id"):
                 self.session_id = event["session_id"]
 
         return result, steps
+
+    def stream_text(self, event: dict) -> None:
+        delta = event.get("delta") or {}
+        if self.on_text and event.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
+            self.on_text(delta.get("text", ""))
 
     @staticmethod
     def check_tools(event: dict) -> None:

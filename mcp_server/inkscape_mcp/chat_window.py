@@ -122,6 +122,54 @@ class SettingsDialog:
         Config.save(**values)
 
 
+class LiveReply:
+    """Claude's answer while it is being written: the text so far and the steps taken, replaced by the
+    finished message when the turn ends."""
+
+    def __init__(self, chat: ChatWindow):
+        self.chat = chat
+        self.text = ""
+        self.steps: list[str] = []
+        self.new_paragraph = False
+
+        bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        bubble.get_style_context().add_class("bubble")
+        bubble.get_style_context().add_class("assistant")
+        self.label = Gtk.Label(xalign=0, wrap=True, selectable=True, can_focus=False)
+        self.label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.progress = Gtk.Label(xalign=0, wrap=True, can_focus=False)
+        self.progress.get_style_context().add_class("steps")
+        bubble.pack_start(self.label, False, False, 0)
+        bubble.pack_start(self.progress, False, False, 0)
+
+        self.row = Gtk.Box()
+        self.row.pack_start(bubble, True, True, 0)
+        chat.messages.pack_start(self.row, False, False, 0)
+        self.row.show_all()
+        self.label.hide()
+
+    def update(self, kind: str, payload) -> bool:
+        if kind == "text":
+            if self.new_paragraph and self.text:
+                self.text = self.text.rstrip() + "\n\n"
+            self.new_paragraph = False
+            self.text += str(payload)
+            self.label.set_text(self.text)
+            self.label.show()
+        elif kind == "step":
+            mark = "✗ " if payload.get("failed") else "• "
+            self.steps.append(f"{mark}{payload['tool']}: {payload['summary']}")
+            self.progress.set_text("\n".join(self.steps[-3:]))
+            self.new_paragraph = True
+            self.chat.status.set_text(f"Claude is working… {len(self.steps)} step{'s' if len(self.steps) != 1 else ''}")
+        self.chat.scroll_soon()
+
+        return False
+
+    def remove(self) -> None:
+        self.row.destroy()
+
+
 class ChatWindow:
     """A window with the conversation, a preview after each answer, a message box, Send and Undo."""
 
@@ -239,13 +287,18 @@ class ChatWindow:
 
         buffer.set_text("")
         self.add_message("user", text)
-        self.work("Claude is working…", lambda: self.session.send(text))
+        live = LiveReply(self)
+
+        def on_event(kind: str, payload) -> None:
+            GLib.idle_add(live.update, kind, payload, priority=GLib.PRIORITY_DEFAULT)
+
+        self.work("Claude is working…", lambda: self.session.send(text, on_event), live)
 
     def undo(self) -> None:
         self.work("Undoing…", self.session.undo)
 
-    def work(self, status: str, task: Callable[[], dict]) -> None:
-        """Runs a chat call off the GTK thread and shows its result when it is done."""
+    def work(self, status: str, task: Callable[[], dict], live: LiveReply | None = None) -> None:
+        """Runs a chat call off the GTK thread and shows its result, in place of `live`, when it is done."""
         self.set_busy(True, status)
 
         def background():
@@ -253,12 +306,14 @@ class ChatWindow:
                 result = task()
             except EXPECTED_ERRORS as exc:
                 result = {"role": "system", "text": f"Error: {exc}"}
-            GLib.idle_add(self.finish, result, priority=GLib.PRIORITY_DEFAULT)
+            GLib.idle_add(self.finish, result, live, priority=GLib.PRIORITY_DEFAULT)
 
         threading.Thread(target=background, daemon=True).start()
 
-    def finish(self, result: dict) -> bool:
+    def finish(self, result: dict, live: LiveReply | None = None) -> bool:
         self.set_busy(False, "")
+        if live:
+            live.remove()
         self.add_message(result.get("role", "system"), result.get("text", ""), result.get("steps"),
                          result.get("preview"), result.get("selection"))
         self.refresh_badge()
@@ -309,6 +364,9 @@ class ChatWindow:
         self.messages.pack_start(row, False, False, 0)
         row.show_all()
 
+        self.scroll_soon()
+
+    def scroll_soon(self) -> None:
         GLib.idle_add(self.scroll_to_end)
 
     def scroll_to_end(self) -> bool:

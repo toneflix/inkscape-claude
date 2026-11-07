@@ -133,3 +133,24 @@ def test_settings_are_saved_and_used(chat, tmp_path, monkeypatch):
 
     assert window.session.backend == "claude-code" and not window.session.needs_key
     assert Config.chat_settings()["backend"] == "claude-code"
+
+
+def test_the_answer_shows_while_it_is_written(chat):
+    from inkscape_mcp.chat_window import LiveReply
+
+    window, _ = chat
+    live = LiveReply(window)
+
+    live.update("text", "Looking at ")
+    live.update("text", "the drawing.")
+    live.update("step", {"tool": "add_elements", "summary": "Added: box", "failed": False})
+    live.update("text", "Done.")
+
+    assert live.label.get_text() == "Looking at the drawing.\n\nDone."
+    assert live.progress.get_text() == "• add_elements: Added: box"
+    assert "1 step" in window.status.get_text()
+
+    rows = len(window.messages.get_children())
+    window.finish({"role": "assistant", "text": "Done."}, live)
+
+    assert len(window.messages.get_children()) == rows, "the finished message takes the live one's place"

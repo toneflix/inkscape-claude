@@ -18,10 +18,15 @@ class ScriptedClient(ClaudeClient):
         self.responses = list(responses)
         self.calls = []
 
-    def send(self, system, messages, tools=None):
+    def send(self, system, messages, tools=None, on_text=None):
         self.calls.append([dict(m) for m in messages])
+        response = self.responses.pop(0)
+        if on_text:
+            for block in response["content"]:
+                if block.get("type") == "text":
+                    on_text(block["text"])
 
-        return self.responses.pop(0)
+        return response
 
 
 def tool_call(tool_id, name, **arguments):

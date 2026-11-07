@@ -237,7 +237,9 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
 ```
 
 - The chat keeps the Inkscape window in sync: before each message it saves the drawing, so Claude sees your
-  latest changes, and afterwards it reloads the window to show Claude's edits.
+  latest changes. While Claude works, its answer appears as it is written along with each step it takes, and
+  the window reloads after each change to the drawing (at most every 1.5 seconds, and once more at the end).
+  Leave the drawing alone until the answer is done: a reload replaces edits made in Inkscape meanwhile.
 - With D-Bus (see Live control) that is the window you already have open. Without it, the chat opens the
   drawing in its own Inkscape window and says so (started from Inkscape, close the original one so you don't
   edit two copies). The chat stops when you close that window, and saves and closes it when you stop the chat.

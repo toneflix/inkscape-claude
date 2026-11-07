@@ -52,6 +52,9 @@ for number, (name, arguments) in enumerate(json.loads(os.environ["FAKE_CLAUDE_CA
           "content": result["content"], "is_error": result.get("isError", False)}]}})
 bridge.stdin.close()
 bridge.wait()
+for word in os.environ["FAKE_CLAUDE_REPLY"].split(" "):
+    emit({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
+                                            "delta": {"type": "text_delta", "text": word + " "}}})
 emit({"type": "result", "subtype": "success", "is_error": False, "result": os.environ["FAKE_CLAUDE_REPLY"]})
 '''
 
@@ -123,7 +126,8 @@ def test_chat_through_claude_code_edits_resumes_and_undoes(drawing, fake_claude)
     script_turn("Added a teal box.",
                 ("add_elements", {"svg_fragment": '<rect id="box" width="50" height="50" fill="teal"/>'}),
                 ("delete_elements", {"element_ids": ["nope"]}))
-    first = session.send("Add a box")
+    events = []
+    first = session.send("Add a box", lambda kind, payload: events.append((kind, payload)))
     script_turn("Done.")
     session.send("Thanks")
     undone = session.undo()
@@ -133,8 +137,10 @@ def test_chat_through_claude_code_edits_resumes_and_undoes(drawing, fake_claude)
     assert [(step["tool"], step["failed"]) for step in first["steps"]] == [("add_elements", False),
                                                                           ("delete_elements", True)]
     assert first["steps"][0]["summary"] == "Added: box"
+    assert [kind for kind, _ in events] == ["step", "step", "text", "text", "text", "text"]
+    assert "".join(payload for kind, payload in events if kind == "text") == "Added a teal box. "
     assert one["prompt"] == "Add a box" and one["api_key"] is None, "the subscription is used, not the key"
-    assert ["--model", "opus", "--effort", "low"] == one["args"][4:8]
+    assert ["--model", "opus", "--effort", "low"] == one["args"][5:9]
     assert "--tools=" in one["args"] and "--resume" not in one["args"]
     assert two["args"][-2:] == ["--resume", "session-1"]
     assert undone["text"] == "Undid the last change." and not SvgDocument.load(drawing).has("box")

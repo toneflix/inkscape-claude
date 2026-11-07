@@ -171,3 +171,27 @@ def test_the_selection_in_inkscape_is_sent_with_the_message(tmp_path):
     assert session.send("Hi")["selection"] == []
     assert session.focus == []
     assert client.calls[1][-1]["content"][-1]["text"] == "Hi"
+
+
+def test_the_reply_streams_and_the_window_reloads_after_each_change(tmp_path, monkeypatch):
+    from inkscape_mcp import chat
+
+    monkeypatch.setattr(chat, "LIVE_RELOAD_SECONDS", 0)
+    path = tmp_path / "drawing.svg"
+    SvgDocument.blank(200, 100).save(path)
+    client = ScriptedClient([
+        tool_call("a", "add_elements", svg_fragment='<rect id="one" width="5" height="5"/>'),
+        tool_call("b", "get_outline"),
+        tool_call("c", "add_elements", svg_fragment='<rect id="two" width="5" height="5"/>'),
+        done("Added two squares."),
+    ])
+    live = MarkingLive(path, [])
+    session = ChatSession(path, client, Inkscape(), live)
+    events = []
+
+    session.send("Two squares", lambda kind, payload: events.append((kind, payload)))
+
+    assert [kind for kind, _ in events] == ["step", "step", "step", "text"]
+    assert events[-1] == ("text", "Added two squares.")
+    assert live.reloads == 3, "after each of the two edits, not the outline, and once at the end"
+    assert session.agent.on_text is None, "callbacks are only connected during the turn"

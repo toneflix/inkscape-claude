@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
-from .agent import DrawingAgent
+from .agent import DrawingAgent, Step
 from .claude import BACKENDS, DEFAULT_MODEL, EFFORTS, ClaudeClient, ClaudeError, Config
 from .claude_code import ClaudeCode, ClaudeCodeAgent
 from .cli import Inkscape, InkscapeError
@@ -33,6 +33,8 @@ from .workspace import History
 
 PAGE = Path(__file__).with_name("chat.html")
 SELECTION_MARK = "data-claude-selected"
+READ_ONLY_TOOLS = {"get_outline", "get_pages", "get_element", "get_bounding_boxes", "render_preview"}
+LIVE_RELOAD_SECONDS = 1.5
 
 EXPECTED_ERRORS = (ClaudeError, InkscapeError, LiveError, SvgError, OSError, ValueError)
 
@@ -137,7 +139,10 @@ class ChatSession:
     def state(self) -> dict:
         return {"document": str(self.path), "live": self.live_enabled, "transcript": self.transcript}
 
-    def send(self, text: str) -> dict:
+    def send(self, text: str, on_event: Callable[[str, object], None] | None = None) -> dict:
+        """Runs one turn. on_event gets ("text", piece of the reply) as Claude writes and ("step", step dict)
+        after each tool call; the Inkscape window reloads after drawing changes, at most every
+        LIVE_RELOAD_SECONDS, and once more at the end."""
         text = text.strip()
         if not text:
             raise ValueError("Type a message first.")
@@ -152,12 +157,14 @@ class ChatSession:
 
             prompt = "\n".join([*self.notes, self.selection_note(selection), text]).strip()
             self.notes.clear()
+            self.listen(on_event)
             try:
                 result = self.agent.run(prompt)
             except EXPECTED_ERRORS as exc:
                 self.transcript.append({"role": "system", "text": f"Error: {exc}"})
                 raise
             finally:
+                self.listen(None)
                 self.sync_to_inkscape()
 
             entry = {"role": "assistant", "text": result.reply, "steps": [asdict(step) for step in result.steps],
@@ -167,6 +174,25 @@ class ChatSession:
             self.focus = selection
 
             return {**entry, "preview": self.preview()}
+
+    def listen(self, on_event: Callable[[str, object], None] | None) -> None:
+        """Connects the agent's text and step callbacks to on_event, or disconnects them."""
+        last_reload = time.monotonic()
+
+        def on_step(step: Step) -> None:
+            nonlocal last_reload
+            if not step.failed and step.tool not in READ_ONLY_TOOLS and \
+                    time.monotonic() - last_reload >= LIVE_RELOAD_SECONDS:
+                try:
+                    self.sync_to_inkscape()
+                except LiveError:
+                    pass
+                last_reload = time.monotonic()
+            if on_event:
+                on_event("step", asdict(step))
+
+        self.agent.on_step = on_step if on_event or self.live_enabled else None
+        self.agent.on_text = (lambda piece: on_event("text", piece)) if on_event else None
 
     def undo(self) -> dict:
         with self.lock:
@@ -223,6 +249,30 @@ class ChatSession:
             self.live.reload(self.window)
 
 
+class Progress:
+    """The reply being written, for the browser page to poll while it waits."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.text = ""
+        self.steps: list[dict] = []
+
+    def reset(self) -> None:
+        with self.lock:
+            self.text, self.steps = "", []
+
+    def update(self, kind: str, payload) -> None:
+        with self.lock:
+            if kind == "text":
+                self.text += str(payload)
+            elif kind == "step":
+                self.steps.append(payload)
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {"text": self.text, "steps": list(self.steps)}
+
+
 class ChatHandler(BaseHTTPRequestHandler):
     session: ChatSession
     token: str
@@ -244,6 +294,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             page = PAGE.read_text(encoding="utf-8").replace("{{TOKEN}}", self.token)
             return self.reply(HTTPStatus.OK, page.encode("utf-8"), "text/html; charset=utf-8")
 
+        if url.path == "/api/progress" and self.authorized():
+            return self.reply(HTTPStatus.OK, self.server.progress.snapshot())
         if url.path == "/api/state" and self.authorized():
             return self.reply(HTTPStatus.OK, self.session.state())
 
@@ -253,7 +305,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not self.authorized():
             return self.reply(HTTPStatus.FORBIDDEN, {"error": "Missing or wrong chat token."})
 
-        routes = {"/api/message": lambda body: self.session.send(str(body.get("text", ""))),
+        routes = {"/api/message": self.send_message,
                   "/api/undo": lambda body: self.session.undo()}
         route = routes.get(urlparse(self.path).path)
         if route is None:
@@ -265,6 +317,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.reply(HTTPStatus.OK, route(body))
         except EXPECTED_ERRORS as exc:
             self.reply(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def send_message(self, body: dict) -> dict:
+        self.server.progress.reset()
+
+        return self.session.send(str(body.get("text", "")), self.server.progress.update)
 
     def authorized(self) -> bool:
         return secrets.compare_digest(self.headers.get("x-chat-token", ""), self.token)
@@ -285,6 +342,7 @@ class ChatServer(ThreadingHTTPServer):
 
     def __init__(self, session: ChatSession, port: int = 0):
         self.token = secrets.token_urlsafe(16)
+        self.progress = Progress()
         self.last_activity = time.monotonic()
         handler = type("BoundChatHandler", (ChatHandler,), {"session": session, "token": self.token})
         super().__init__(("127.0.0.1", port), handler)
