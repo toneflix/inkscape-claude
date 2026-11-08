@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Claude for Inkscape</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,{{LOGO}}">
 <style>
@@ -17,6 +17,9 @@
     --user: #efe9df;
     --error: #b42318;
     --ok: #2e7d4f;
+    --glass: rgba(255, 255, 255, 0.62);
+    --glass-field: rgba(247, 246, 243, 0.55);
+    --glass-edge: rgba(255, 255, 255, 0.7);
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -30,12 +33,16 @@
       --user: #33302b;
       --error: #f97066;
       --ok: #6fcf97;
+      --glass: rgba(36, 35, 32, 0.6);
+      --glass-field: rgba(27, 26, 24, 0.5);
+      --glass-edge: rgba(255, 255, 255, 0.08);
     }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     height: 100vh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     background: var(--bg);
@@ -101,6 +108,24 @@
   #attached img { width: 56px; height: 56px; object-fit: cover; }
   #attached button { position: absolute; top: -6px; right: -6px; padding: 2px; border-radius: 10px;
                      background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+  /* On phones the composer floats over the conversation as frosted glass. */
+  @media (max-width: 640px) {
+    body { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    main, form { grid-row: 2; grid-column: 1; }
+    main { padding-bottom: calc(var(--composer-height, 140px) + 16px); }
+    form { align-self: end; z-index: 1; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+
+    @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+      form {
+        background: var(--glass);
+        border-top-color: var(--glass-edge);
+        box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
+        -webkit-backdrop-filter: blur(18px) saturate(180%);
+        backdrop-filter: blur(18px) saturate(180%);
+      }
+      textarea { background: var(--glass-field); }
+    }
+  }
 </style>
 </head>
 <body>
@@ -142,6 +167,11 @@
   const attached = document.getElementById("attached");
   const MAX_BYTES = 5 * 1024 * 1024;
   let pending = [];
+
+  const form = document.getElementById("form");
+  new ResizeObserver(() => {
+    document.documentElement.style.setProperty("--composer-height", `${form.offsetHeight}px`);
+  }).observe(form);
 
   async function api(path, body) {
     const response = await fetch(path, {
