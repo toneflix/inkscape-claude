@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude for Inkscape</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,{{LOGO}}">
 <style>
   :root {
     --bg: #f7f6f3;
@@ -47,7 +48,8 @@
     background: var(--panel);
   }
   header { position: relative; }
-  header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .logo { width: 22px; height: 22px; }
   #new { position: absolute; top: 10px; right: 16px; padding: 4px 10px; font-size: 12px; }
   #doc { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   .badge { display: inline-block; margin-top: 4px; font-size: 12px; color: var(--muted); }
@@ -68,7 +70,7 @@
   .empty { color: var(--muted); text-align: center; margin: auto; max-width: 280px; }
   form { padding: 12px 16px; border-top: 1px solid var(--border); background: var(--panel); display: flex;
          flex-direction: column; gap: 8px; }
-  textarea { width: 100%; min-height: 64px; resize: vertical; padding: 8px 10px; border-radius: 8px;
+  textarea { width: 100%; min-height: 64px; resize: vertical; padding: 10px 12px; border-radius: 8px;
              border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; }
   .row { display: flex; gap: 8px; align-items: center; }
   .row .hint { flex: 1; color: var(--muted); font-size: 12px; }
@@ -76,7 +78,11 @@
   button.primary { background: var(--accent); color: var(--accent-text); font-weight: 600; }
   button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
   button:disabled { opacity: 0.5; cursor: default; }
-  button.retry { display: block; margin: 6px auto 0; padding: 2px 12px; font-size: 12px; }
+  button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+  button.icon { padding: 8px; }
+  button[hidden] { display: none; }
+  button svg { flex: none; }
+  button.retry { display: flex; margin: 6px auto 0; padding: 2px 12px; font-size: 12px; }
   .usage { margin-top: 6px; display: grid; grid-template-columns: 1fr 90px; gap: 2px 10px; align-items: center;
            font-size: 12px; color: var(--muted); }
   .usage:empty { display: none; }
@@ -89,16 +95,17 @@
   #attached:empty { display: none; }
   #attached .chip { position: relative; }
   #attached img { width: 56px; height: 56px; object-fit: cover; }
-  #attached button { position: absolute; top: -6px; right: -6px; padding: 0 6px; border-radius: 10px;
+  #attached button { position: absolute; top: -6px; right: -6px; padding: 2px; border-radius: 10px;
                      background: var(--panel); border: 1px solid var(--border); color: var(--text); }
 </style>
 </head>
 <body>
 <header>
-  <h1>Claude for Inkscape</h1>
+  <h1><img class="logo" src="data:image/svg+xml;base64,{{LOGO}}" alt="">Claude for Inkscape</h1>
   <div id="doc"></div>
   <div id="live" class="badge"></div>
-  <button type="button" class="secondary" id="new">New chat</button>
+  <button type="button" class="secondary icon" id="new" title="New chat: Claude forgets this drawing's conversation"
+          aria-label="New chat">{{icon:square-pen}}</button>
   <div id="usage" class="usage"></div>
 </header>
 <main id="log">
@@ -111,13 +118,15 @@
   <div class="row">
     <span class="hint" id="hint">Enter to send, Shift+Enter for a new line</span>
     <input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
-    <button type="button" class="secondary" id="image">Image…</button>
-    <button type="button" class="secondary" id="undo">Undo</button>
-    <button type="submit" class="primary" id="send">Send</button>
+    <button type="button" class="secondary icon" id="image" aria-label="Attach images"
+            title="Attach images: Claude sees them as context. You can also paste or drop them here.">{{icon:image-plus}}</button>
+    <button type="button" class="secondary" id="undo" title="Undo Claude's last change to the drawing" hidden>{{icon:undo-2}} Undo</button>
+    <button type="submit" class="primary" id="send">{{icon:send}} Send</button>
   </div>
 </form>
 <script>
   const TOKEN = "{{TOKEN}}";
+  const ICONS = { retry: `{{icon:rotate-cw}}`, remove: `{{icon:x}}` };
   const log = document.getElementById("log");
   const input = document.getElementById("input");
   const hint = document.getElementById("hint");
@@ -133,7 +142,9 @@
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const data = await response.json();
-    if (!response.ok) throw Object.assign(new Error(data.error || response.statusText), { retry: data.retry });
+    if (!response.ok) {
+      throw Object.assign(new Error(data.error || response.statusText), { retry: data.retry, canUndo: data.can_undo });
+    }
     return data;
   }
 
@@ -182,7 +193,7 @@
       const retry = document.createElement("button");
       retry.type = "button";
       retry.className = "secondary retry";
-      retry.textContent = "Retry";
+      retry.innerHTML = ICONS.retry + " Retry";
       retry.addEventListener("click", () => {
         retry.remove();
         run("/api/retry", {}, "Trying again…");
@@ -258,7 +269,7 @@
         img.title = image.name;
         const remove = document.createElement("button");
         remove.type = "button";
-        remove.textContent = "×";
+        remove.innerHTML = ICONS.remove;
         remove.title = "Remove";
         remove.addEventListener("click", () => { pending = pending.filter((p) => p !== image); chip.remove(); });
         chip.append(img, remove);
@@ -293,6 +304,10 @@
     return () => { clearInterval(timer); live.remove(); };
   }
 
+  function showUndo(canUndo) {
+    if (canUndo !== undefined) document.getElementById("undo").hidden = !canUndo;
+  }
+
   async function run(path, body, waiting) {
     busy(true, waiting);
     const sending = path === "/api/message" || path === "/api/retry";
@@ -304,9 +319,11 @@
       add({ role: result.role || "system", text: result.text, steps: result.steps, selection: result.selection },
           result.preview);
       showUsage(result.usage);
+      showUndo(result.can_undo);
     } catch (error) {
       stop();
       add({ role: "system", text: `Error: ${error.message}`, retry: sending && error.retry });
+      showUndo(error.canUndo);
     } finally {
       busy(false);
       input.focus();
@@ -373,6 +390,7 @@
   api("/api/state").then((state) => {
     document.getElementById("doc").textContent = state.document;
     const live = document.getElementById("live");
+    showUndo(state.can_undo);
     live.className = state.live ? "badge on" : "badge";
     live.textContent = state.live
       ? "Synced with the open Inkscape window"

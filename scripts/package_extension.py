@@ -16,7 +16,7 @@ def files():
             yield path, Path("claude") / path.name
 
     for path in sorted((ROOT / "mcp_server" / "inkscape_mcp").iterdir()):
-        if path.suffix in (".py", ".html"):
+        if path.suffix in (".py", ".html", ".svg"):
             yield path, Path("claude") / "inkscape_mcp" / path.name
 
 

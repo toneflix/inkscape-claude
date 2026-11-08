@@ -20,4 +20,4 @@ inkscape-claude-chat = "inkscape_mcp.chat:main"
 packages = ["inkscape_mcp"]
 
 [tool.setuptools.package-data]
-inkscape_mcp = ["*.html"]
+inkscape_mcp = ["*.html", "*.svg"]

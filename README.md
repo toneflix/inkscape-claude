@@ -1,3 +1,5 @@
+<img src="mcp_server/inkscape_mcp/logo.svg" alt="" width="96" align="right">
+
 # Inkscape + Claude (prototype)
 
 Three ways for Claude to work with Inkscape 1.x:

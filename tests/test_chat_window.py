@@ -68,10 +68,14 @@ def test_send_shows_the_answer_and_a_preview(chat):
 
     window, path = chat
 
+    assert not window.undo_button.get_visible(), "nothing to undo yet"
+
     window.prompt.get_buffer().set_text("Add a box")
     window.send()
     wait_until_idle(window)
 
+    assert window.undo_button.get_visible()
+    assert window.send_button.get_image() is not None, "buttons carry their icons"
     shown = texts(window)
     images = [w for row in window.messages.get_children() for bubble in row.get_children()
               for w in bubble.get_children() if isinstance(w, Gtk.Image)]

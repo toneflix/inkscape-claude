@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import secrets
 import sys
 import tempfile
@@ -27,6 +28,7 @@ from .chat_store import ChatStore
 from .claude import BACKENDS, DEFAULT_MODEL, EFFORTS, ClaudeClient, ClaudeError, Config
 from .claude_code import ClaudeCode, ClaudeCodeAgent
 from .cli import Inkscape, InkscapeError
+from .icons import svg
 from .live import LiveError, LiveInkscape
 from .operations import DocumentOperations
 from .shell import ShellInkscape, live_control
@@ -35,6 +37,7 @@ from .usage import Usage
 from .workspace import History
 
 PAGE = Path(__file__).with_name("chat.html")
+LOGO = Path(__file__).with_name("logo.svg")
 SELECTION_MARK = "data-claude-selected"
 READ_ONLY_TOOLS = {"get_outline", "get_pages", "get_element", "get_bounding_boxes", "render_preview"}
 LIVE_RELOAD_SECONDS = 1.5
@@ -194,7 +197,11 @@ class ChatSession:
 
     def state(self) -> dict:
         return {"document": str(self.path), "live": self.live_enabled, "transcript": self.transcript,
-                "usage": self.usage.to_dict(), "can_retry": self.can_retry}
+                "usage": self.usage.to_dict(), "can_retry": self.can_retry, "can_undo": self.can_undo}
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self.operations.history.snapshots(self.path))
 
     @property
     def can_retry(self) -> bool:
@@ -386,6 +393,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             if parse_qs(url.query).get("token", [""])[0] != self.token:
                 return self.reply(HTTPStatus.FORBIDDEN, {"error": "Open the link printed by inkscape-claude-chat."})
             page = PAGE.read_text(encoding="utf-8").replace("{{TOKEN}}", self.token)
+            page = page.replace("{{LOGO}}", base64.b64encode(LOGO.read_bytes()).decode("ascii"))
+            page = re.sub(r"\{\{icon:([a-z0-9-]+)\}\}", lambda match: svg(match.group(1)), page)
             return self.reply(HTTPStatus.OK, page.encode("utf-8"), "text/html; charset=utf-8")
 
         if url.path == "/api/progress" and self.authorized():
@@ -410,9 +419,10 @@ class ChatHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("content-length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
-            self.reply(HTTPStatus.OK, route(body))
+            self.reply(HTTPStatus.OK, {**route(body), "can_undo": self.session.can_undo})
         except EXPECTED_ERRORS as exc:
-            self.reply(HTTPStatus.BAD_REQUEST, {"error": str(exc), "retry": self.session.can_retry})
+            self.reply(HTTPStatus.BAD_REQUEST, {"error": str(exc), "retry": self.session.can_retry,
+                                                "can_undo": self.session.can_undo})
 
     def send_message(self, body: dict) -> dict:
         images = [self.session.attachments.add_data(str(image.get("name") or "image"),

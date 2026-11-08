@@ -82,6 +82,8 @@ class Stage:
                    "--name", "inkscape-mcp", "--distpath", str(self.bin), "--workpath", str(work),
                    "--specpath", str(work),
                    str(INSTALLER / "inkscape_mcp_entry.py")]
+        if sys.platform == "win32":
+            command[-1:-1] = ["--icon", str(INSTALLER / "windows" / "inkscape-claude.ico")]
         subprocess.run(command, check=True)
 
 
