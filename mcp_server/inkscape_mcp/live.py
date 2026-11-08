@@ -155,6 +155,13 @@ class LiveInkscape:
 
         self.export(path, "svg")
 
+    def saves_in_place(self) -> bool:
+        """Whether save() is File > Save, which writes to the file the window has open, wherever that is."""
+        return bool(self.windows())
+
+    def moved(self, window: int | None, path: Path) -> None:
+        """Nothing to do: Inkscape itself knows which file a window has open."""
+
     def reload(self, window: int | None = None) -> None:
         """File > Revert, or reloading the file into the same document where window actions are missing."""
         if self.windows():

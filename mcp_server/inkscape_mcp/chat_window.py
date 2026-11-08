@@ -613,6 +613,8 @@ class ChatWindow:
         self.set_busy(False, "")
         if live:
             live.remove()
+        if result.get("notice"):
+            self.add_message("system", result["notice"])
         self.add_message(result.get("role", "system"), result.get("text", ""), result.get("steps"),
                          result.get("preview"), result.get("selection"), retry=result.get("retry"))
         self.usage.update(result.get("usage"))

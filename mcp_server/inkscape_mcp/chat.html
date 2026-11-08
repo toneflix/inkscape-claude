@@ -342,6 +342,7 @@
     try {
       const result = await api(path, body);
       stop();
+      if (result.notice) add({ role: "system", text: result.notice });
       add({ role: result.role || "system", text: result.text, steps: result.steps, selection: result.selection },
           result.preview);
       showUsage(result.usage);

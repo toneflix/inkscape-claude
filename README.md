@@ -262,8 +262,11 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
 - Each drawing keeps its chat: reopen the chat for the same file and the conversation is there, and Claude
   remembers it (saved under `chats` next to the config file). **New chat** starts over.
 - **Save as** (disk icon) saves the drawing under a new name and carries on there: the chat history moves with
-  it and the chat follows the new file in Inkscape. Inkscape's own File > Save As can't be seen by the chat, so
-  after using it, open the chat again from that window.
+  it and the chat follows the new file in Inkscape.
+- After Inkscape's own **File > Save As**, the chat finds the new file in Inkscape's recent files when you send
+  your next message, as long as it holds mostly the same objects, and says so. On Linux it can tell a **Save a
+  Copy** apart once the drawing has changes; elsewhere a copy is followed the same way, so use the chat's Save as
+  there instead.
 - **Undo** reverts Claude's last edit, and Claude is told about it. **Enter** sends, **Shift+Enter** adds a line.
 - If the chat cannot start, Inkscape shows why. Its output goes to `chat.log` next to the config file
   (`~/.config/inkscape-claude/chat.log`, Windows: `%APPDATA%\inkscape-claude\chat.log`).

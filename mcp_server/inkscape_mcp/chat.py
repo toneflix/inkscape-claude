@@ -32,6 +32,7 @@ from .cli import Inkscape, InkscapeError
 from .icons import svg
 from .live import LiveError, LiveInkscape
 from .operations import DocumentOperations
+from .recent import RecentFiles
 from .shell import ShellInkscape, live_control
 from .svgdoc import SvgDocument, SvgError
 from .usage import Usage
@@ -67,6 +68,9 @@ class ChatSession:
         self.notes: list[str] = []
         self.focus: list[str] = []
         self.failed: tuple[str, list[Attachment]] | None = None
+        self.recent = RecentFiles()
+        self.checked_at = time.time()
+        self.earlier_paths: set[Path] = set()
         self.lock = threading.Lock()
         self.restore()
 
@@ -93,7 +97,7 @@ class ChatSession:
             notice = (f"Your drawing had not been saved, so the chat saved it as {document} and opened it in a new "
                       "Inkscape window that it keeps in sync. Work in that window and close the untitled one. To keep it "
                       "under another name, use the chat's Save as button: the chat follows the file. After File > "
-                      "Save As in Inkscape instead, open the chat again from that window.")
+                      "Save As in Inkscape, the chat finds the new file when you send your next message.")
         if live is not None and (isinstance(live, ShellInkscape) or not args.attach) and window is None:
             try:
                 window = live.open(document)
@@ -167,12 +171,7 @@ class ChatSession:
             shutil.copy2(self.path, target)
 
             old_window = self.window
-            self.path = target
-            self.agent.move_to(target)
-            if self.store:
-                self.store = self.store.move_to(target)
-                self.attachments.folder = self.store.attachments
-            self.notes.append(f"(The drawing is now saved as {target.name}.)")
+            self.move_to(target)
 
             text = f"Saved as {target}. The chat works on this file from now on."
             if self.live is not None:
@@ -181,6 +180,52 @@ class ChatSession:
             self.save()
 
             return {"role": "system", "text": text}
+
+    def move_to(self, target: Path) -> None:
+        """Carries the chat, what Claude remembers and the attached images over to the drawing at `target`."""
+        self.earlier_paths.add(self.path)
+        self.path = target
+        self.agent.move_to(target)
+        if self.store:
+            self.store = self.store.move_to(target)
+            self.attachments.folder = self.store.attachments
+        self.notes.append(f"(The drawing is now saved as {target.name}.)")
+
+    def follow_save_as(self) -> str | None:
+        """Follows the drawing to a new name after File > Save As in Inkscape, which only shows in Inkscape's
+        recent files: a file it saved since the last check that holds the same objects. Returns the notice."""
+        since, self.checked_at = self.checked_at, time.time()
+        if not self.live_enabled:
+            return None
+
+        left_out = {self.path, *self.earlier_paths}
+        candidates = [path for path in self.recent.saved_by_inkscape(since) if path.resolve() not in left_out]
+        target = next((path.resolve() for path in candidates if self.recent.same_drawing(path, self.path)), None)
+        if target is None or self.saved_a_copy(target):
+            return None
+
+        self.move_to(target)
+        self.live.moved(self.window, target)
+        text = (f"Inkscape saved this drawing as {target}, so the chat works on that file now. If that is the "
+                "wrong file, use the chat's Save as button.")
+        self.transcript.append({"role": "system", "text": text})
+
+        return text
+
+    def saved_a_copy(self, target: Path) -> bool:
+        """Whether `target` came from File > Save a Copy, which Inkscape lists the same way as Save As. Where
+        saving is File > Save, the window's own file is the one a save changes."""
+        if not self.live.saves_in_place():
+            return False
+
+        before = [path.stat().st_mtime_ns for path in (self.path, target)]
+        self.live.save(self.window, self.path)
+        after = [path.stat().st_mtime_ns for path in (self.path, target)]
+        if after[0] != before[0] and after[1] == before[1]:
+            self.earlier_paths.add(target)
+            return True
+
+        return False
 
     def switch_window(self, target: Path, old_window: int | None) -> str:
         """Opens `target` in Inkscape for the chat to follow, and closes the old window where Inkscape allows."""
@@ -288,10 +333,11 @@ class ChatSession:
                               "Claude Code in Settings to use your subscription.")
 
         with self.lock:
+            if not retrying:
+                self.transcript.append({"role": "user", "text": text, "images": [image.name for image in images]})
+            notice = self.follow_save_as()
             selection = self.sync_from_inkscape()
             names = [image.name for image in images]
-            if not retrying:
-                self.transcript.append({"role": "user", "text": text, "images": names})
 
             prompt = "\n".join([*self.notes, self.selection_note(selection), self.images_note(names), text]).strip()
             self.notes.clear()
@@ -315,7 +361,7 @@ class ChatSession:
             self.focus = selection
             self.save()
 
-            return {**entry, "preview": self.preview(), "usage": self.usage.to_dict()}
+            return {**entry, "preview": self.preview(), "usage": self.usage.to_dict(), "notice": notice}
 
     def listen(self, on_event: Callable[[str, object], None] | None) -> None:
         """Connects the agent's text and step callbacks to on_event, or disconnects them."""

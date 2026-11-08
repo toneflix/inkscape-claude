@@ -168,6 +168,10 @@ def test_the_answer_shows_while_it_is_written(chat):
 
     assert len(window.messages.get_children()) == rows, "the finished message takes the live one's place"
 
+    window.finish({"role": "assistant", "text": "Moved on.", "notice": "Inkscape saved this drawing as b.svg."})
+
+    assert texts(window)[-2:] == ["Inkscape saved this drawing as b.svg.", "Moved on."]
+
 
 def test_attached_images_and_usage_show_in_the_window(chat, tmp_path):
     from gi.repository import Gtk

@@ -181,6 +181,13 @@ class ShellInkscape:
         target = self._window(window)
         self.export(target.path, "svg", window=window)
 
+    def saves_in_place(self) -> bool:
+        return False
+
+    def moved(self, window: int | None, path: Path) -> None:
+        """Saves the window to `path` from now on, after it was saved there under a new name."""
+        self._window(window).path = path
+
     def reload(self, window: int | None = None) -> None:
         if not self._rebase_supported():
             raise LiveError("Reloading the window needs Inkscape 1.3 or later. Use File > Revert in Inkscape.")
