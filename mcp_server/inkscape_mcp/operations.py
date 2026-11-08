@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable, TypeVar
 
+from .attachments import Attachment
 from .cli import Inkscape
 from .pages import Box, Page
 from .svgdoc import SvgDocument
@@ -115,6 +116,35 @@ class DocumentOperations:
 
     def add(self, path: Path, fragment: str, parent_id: str | None = None, before_id: str | None = None) -> list[str]:
         return self.edit(path, lambda doc: doc.add(fragment, parent_id, before_id))
+
+    def place_image(self, path: Path, image: Attachment, x: float | None = None, y: float | None = None,
+                    width: float | None = None, height: float | None = None, page: str | int | None = None,
+                    element_id: str | None = None) -> tuple[str, Box]:
+        """Embeds an attached image. Without a size it keeps its pixel size, shrunk to fit 80% of the page;
+        with one side given the other keeps the aspect ratio. Without a position it is centred on the page."""
+        doc = SvgDocument.load(path)
+        target = doc.pages.get(page) if page is not None else doc.pages.list()[0]
+        scale = doc.user_unit_px()
+        pixels = image.size or (target.width * scale / 2, target.height * scale / 2)
+        natural = (pixels[0] / scale, pixels[1] / scale)
+
+        if width and height:
+            size = (float(width), float(height))
+        elif width or height:
+            factor = float(width) / natural[0] if width else float(height) / natural[1]
+            size = (natural[0] * factor, natural[1] * factor)
+        else:
+            factor = min(1.0, 0.8 * target.width / natural[0], 0.8 * target.height / natural[1])
+            size = (natural[0] * factor, natural[1] * factor)
+        left = float(x) if x is not None else target.x + (target.width - size[0]) / 2
+        top = float(y) if y is not None else target.y + (target.height - size[1]) / 2
+        box = (left, top, *size)
+        name = element_id or "".join(c if c.isalnum() or c in "_-" else "-" for c in image.path.stem) or "image"
+
+        placed = doc.add_image(image.data_uri(), box, name, image.name)
+        self.write(path, doc)
+
+        return placed, box
 
     def update(self, path: Path, element_id: str, attributes: dict | None = None, style: dict | None = None,
                text: str | None = None) -> None:

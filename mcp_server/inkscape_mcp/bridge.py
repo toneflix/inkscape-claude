@@ -2,7 +2,7 @@
 
 Standard library only, so it runs on Inkscape's bundled Python without the `mcp` package.
 
-Run:  python -m inkscape_mcp.bridge drawing.svg --history DIR
+Run:  python -m inkscape_mcp.bridge drawing.svg --history DIR [--attachments DIR]
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TextIO
 
 from .agent import EXPECTED_ERRORS, TOOLS, DrawingTools
+from .attachments import Attachments
 from .cli import Inkscape
 from .operations import DocumentOperations
 from .workspace import History
@@ -87,10 +88,12 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Serve the drawing tools for one SVG file over MCP stdio.")
     parser.add_argument("document", type=Path)
     parser.add_argument("--history", type=Path, help="folder for undo snapshots (default: next to the file)")
+    parser.add_argument("--attachments", type=Path, help="folder with the images place_image can embed")
     args = parser.parse_args(argv)
 
     operations = DocumentOperations(Inkscape.from_env(), History(root=args.history))
-    Bridge(DrawingTools(operations, args.document.resolve())).serve(sys.stdin, sys.stdout)
+    attachments = Attachments(args.attachments) if args.attachments else None
+    Bridge(DrawingTools(operations, args.document.resolve(), attachments)).serve(sys.stdin, sys.stdout)
 
 
 if __name__ == "__main__":

@@ -74,6 +74,21 @@
   button.primary { background: var(--accent); color: var(--accent-text); font-weight: 600; }
   button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
   button:disabled { opacity: 0.5; cursor: default; }
+  button.retry { display: block; margin: 6px auto 0; padding: 2px 12px; font-size: 12px; }
+  .usage { margin-top: 6px; display: grid; grid-template-columns: 1fr 90px; gap: 2px 10px; align-items: center;
+           font-size: 12px; color: var(--muted); }
+  .usage:empty { display: none; }
+  .bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+  .bar span { display: block; height: 100%; background: var(--ok); }
+  .bar span.warn { background: #d08a1e; }
+  .bar span.over { background: var(--error); }
+  .images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .images img { max-width: 160px; max-height: 120px; border-radius: 6px; border: 1px solid var(--border); }
+  #attached:empty { display: none; }
+  #attached .chip { position: relative; }
+  #attached img { width: 56px; height: 56px; object-fit: cover; }
+  #attached button { position: absolute; top: -6px; right: -6px; padding: 0 6px; border-radius: 10px;
+                     background: var(--panel); border: 1px solid var(--border); color: var(--text); }
 </style>
 </head>
 <body>
@@ -81,15 +96,19 @@
   <h1>Claude for Inkscape</h1>
   <div id="doc"></div>
   <div id="live" class="badge"></div>
+  <div id="usage" class="usage"></div>
 </header>
 <main id="log">
   <p class="empty" id="empty">Ask for a change, for example "add a soft drop shadow to the logo" or
     "center everything on the page". Claude keeps the whole conversation in mind.</p>
 </main>
 <form id="form">
-  <textarea id="input" placeholder="What should Claude do?" autofocus></textarea>
+  <div id="attached" class="images"></div>
+  <textarea id="input" placeholder="What should Claude do? Paste or drop images to show Claude." autofocus></textarea>
   <div class="row">
     <span class="hint" id="hint">Enter to send, Shift+Enter for a new line</span>
+    <input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+    <button type="button" class="secondary" id="image">Image…</button>
     <button type="button" class="secondary" id="undo">Undo</button>
     <button type="submit" class="primary" id="send">Send</button>
   </div>
@@ -99,7 +118,10 @@
   const log = document.getElementById("log");
   const input = document.getElementById("input");
   const hint = document.getElementById("hint");
-  const buttons = [document.getElementById("send"), document.getElementById("undo")];
+  const buttons = ["send", "undo", "image"].map((id) => document.getElementById(id));
+  const attached = document.getElementById("attached");
+  const MAX_BYTES = 5 * 1024 * 1024;
+  let pending = [];
 
   async function api(path, body) {
     const response = await fetch(path, {
@@ -108,7 +130,7 @@
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || response.statusText);
+    if (!response.ok) throw Object.assign(new Error(data.error || response.statusText), { retry: data.retry });
     return data;
   }
 
@@ -117,6 +139,19 @@
     const div = document.createElement("div");
     div.className = `msg ${entry.role}` + (entry.text.startsWith("Error:") ? " error" : "");
     div.textContent = entry.text;
+
+    if (entry.images && entry.images.length) {
+      const images = document.createElement("div");
+      images.className = "images";
+      for (const image of entry.images) {
+        const img = document.createElement("img");
+        img.alt = image.name;
+        img.title = image.name;
+        img.src = image.url;
+        images.append(img);
+      }
+      div.append(images);
+    }
 
     if (entry.selection && entry.selection.length) {
       const selected = document.createElement("div");
@@ -140,6 +175,18 @@
       div.append(details);
     }
 
+    if (entry.retry) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "secondary retry";
+      retry.textContent = "Retry";
+      retry.addEventListener("click", () => {
+        retry.remove();
+        run("/api/retry", {}, "Trying again…");
+      });
+      div.append(retry);
+    }
+
     if (preview) {
       const img = document.createElement("img");
       img.className = "preview";
@@ -150,6 +197,72 @@
 
     log.append(div);
     log.scrollTop = log.scrollHeight;
+  }
+
+  let lastUsage = null;
+
+  function limitText(limit) {
+    let text = limit.status === "rejected" ? `${limit.name}: reached` : `${limit.name}: ${Math.round(limit.used * 100)}% used`;
+    if (!limit.resets_at) return text;
+    const left = Math.max(0, Math.floor(limit.resets_at - Date.now() / 1000));
+    const hours = Math.floor(left / 3600), minutes = Math.floor((left % 3600) / 60);
+    const wait = left < 60 ? "less than a minute" : hours >= 24 ? `${Math.floor(hours / 24)} d ${hours % 24} h`
+      : hours ? `${hours} h ${minutes} min` : `${minutes} min`;
+    const when = new Date(limit.resets_at * 1000);
+    const clock = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const day = left >= 86400 ? when.toLocaleDateString([], { weekday: "short" }) + " " : "";
+    return `${text}, resets in ${wait} (${day}${clock})`;
+  }
+
+  function showUsage(usage) {
+    const box = document.getElementById("usage");
+    if (!usage || (!usage.context_tokens && !usage.limits.length)) return;
+    lastUsage = usage;
+    box.replaceChildren();
+    const rows = [[usage.context_text, usage.context_share]];
+    usage.limits.forEach((limit) => rows.push([limitText(limit), limit.used]));
+    for (const [text, share] of rows) {
+      const label = document.createElement("span");
+      label.textContent = text;
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      if (share !== null && share !== undefined) {
+        const fill = document.createElement("span");
+        fill.style.width = `${Math.round(share * 100)}%`;
+        fill.className = share >= 0.9 ? "over" : share >= 0.7 ? "warn" : "";
+        bar.append(fill);
+      }
+      box.append(label, bar);
+    }
+  }
+
+  function attach(files) {
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) continue;
+      if (file.size > MAX_BYTES) {
+        add({ role: "system", text: `Error: ${file.name} is larger than 5 MB. Use a smaller image.` });
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const url = reader.result;
+        const image = { name: file.name || "pasted.png", url, data: url.slice(url.indexOf(",") + 1) };
+        pending.push(image);
+        const chip = document.createElement("div");
+        chip.className = "chip";
+        const img = document.createElement("img");
+        img.src = url;
+        img.title = image.name;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "×";
+        remove.title = "Remove";
+        remove.addEventListener("click", () => { pending = pending.filter((p) => p !== image); chip.remove(); });
+        chip.append(img, remove);
+        attached.append(chip);
+      };
+      reader.readAsDataURL(file);
+    }
   }
 
   function busy(on, text) {
@@ -166,6 +279,7 @@
         const progress = await api("/api/progress");
         const last = progress.steps.slice(-3).map((step) => `${step.failed ? "✗" : "•"} ${step.tool}: ${step.summary}`);
         live.textContent = [progress.text, last.join("\n")].filter(Boolean).join("\n\n");
+        showUsage(progress.usage);
         if (live.textContent && !shown) {
           log.append(live);
           shown = true;
@@ -178,15 +292,18 @@
 
   async function run(path, body, waiting) {
     busy(true, waiting);
-    const stop = path === "/api/message" ? follow() : () => {};
+    const sending = path === "/api/message" || path === "/api/retry";
+    document.querySelectorAll("button.retry").forEach((button) => button.remove());
+    const stop = sending ? follow() : () => {};
     try {
       const result = await api(path, body);
       stop();
       add({ role: result.role || "system", text: result.text, steps: result.steps, selection: result.selection },
           result.preview);
+      showUsage(result.usage);
     } catch (error) {
       stop();
-      add({ role: "system", text: `Error: ${error.message}` });
+      add({ role: "system", text: `Error: ${error.message}`, retry: sending && error.retry });
     } finally {
       busy(false);
       input.focus();
@@ -196,10 +313,32 @@
   document.getElementById("form").addEventListener("submit", (event) => {
     event.preventDefault();
     const text = input.value.trim();
-    if (!text) return;
+    const images = pending;
+    if (!text && !images.length) return;
     input.value = "";
-    add({ role: "user", text });
-    run("/api/message", { text }, "Claude is working on the drawing…");
+    pending = [];
+    attached.replaceChildren();
+    add({ role: "user", text: text || "Here is an image.", images });
+    run("/api/message", { text, images: images.map(({ name, data }) => ({ name, data })) },
+        "Claude is working on the drawing…");
+  });
+
+  document.getElementById("image").addEventListener("click", () => document.getElementById("file").click());
+  document.getElementById("file").addEventListener("change", (event) => {
+    attach(event.target.files);
+    event.target.value = "";
+  });
+  input.addEventListener("paste", (event) => {
+    const files = [...(event.clipboardData?.files || [])];
+    if (files.length) {
+      event.preventDefault();
+      attach(files);
+    }
+  });
+  document.addEventListener("dragover", (event) => event.preventDefault());
+  document.addEventListener("drop", (event) => {
+    event.preventDefault();
+    attach(event.dataTransfer?.files || []);
   });
 
   input.addEventListener("keydown", (event) => {
@@ -208,6 +347,8 @@
       document.getElementById("form").requestSubmit();
     }
   });
+
+  setInterval(() => showUsage(lastUsage), 30000);
 
   document.getElementById("undo").addEventListener("click", () => run("/api/undo", {}, "Undoing…"));
 
@@ -218,7 +359,9 @@
     live.textContent = state.live
       ? "Synced with the open Inkscape window"
       : "Not synced: use File > Revert in Inkscape to see changes";
-    state.transcript.forEach((entry) => add(entry));
+    state.transcript.forEach((entry, index) =>
+      add({ ...entry, images: [], retry: entry.retry && index === state.transcript.length - 1 }));
+    showUsage(state.usage);
   });
 </script>
 </body>

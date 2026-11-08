@@ -14,6 +14,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from .usage import Limit
+
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 KEY_REJECTED = "The API key was rejected. Check the key you configured."
@@ -102,8 +104,8 @@ class ClaudeClient:
 
     def send(self, system: str, messages: list[dict], tools: list[dict] | None = None,
              on_text: Callable[[str], None] | None = None) -> dict:
-        """Return the response as {"content": [...], "stop_reason": ...}. on_text gets the reply text as it
-        arrives."""
+        """Return the response as {"content": [...], "stop_reason": ..., "usage": {...}, "limits": [Limit]}.
+        on_text gets the reply text as it arrives."""
         raise NotImplementedError
 
     def ask(self, system: str, content: list) -> str:
@@ -160,6 +162,7 @@ class SdkClaudeClient(ClaudeClient):
                     if on_text and event.type == "text":
                         on_text(event.text)
                 message = stream.get_final_message()
+                limits = Limit.from_headers(stream.response.headers)
         except anthropic.AuthenticationError as exc:
             raise ClaudeError(KEY_REJECTED) from exc
         except anthropic.RateLimitError as exc:
@@ -171,7 +174,8 @@ class SdkClaudeClient(ClaudeClient):
 
         data = message.to_dict(mode="json", exclude_none=True)
 
-        return {"content": data["content"], "stop_reason": data.get("stop_reason")}
+        return {"content": data["content"], "stop_reason": data.get("stop_reason"), "usage": data.get("usage"),
+                "limits": limits}
 
 
 class HttpClaudeClient(ClaudeClient):
@@ -200,8 +204,9 @@ class HttpClaudeClient(ClaudeClient):
 
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                limits = Limit.from_headers(response.headers)
                 if on_text:
-                    return MessageStream(on_text).read(response)
+                    return {**MessageStream(on_text).read(response), "limits": limits}
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
@@ -210,7 +215,8 @@ class HttpClaudeClient(ClaudeClient):
         except urllib.error.URLError as exc:
             raise ClaudeError(f"Could not reach the Claude API: {exc.reason}") from exc
 
-        return {"content": data.get("content", []), "stop_reason": data.get("stop_reason")}
+        return {"content": data.get("content", []), "stop_reason": data.get("stop_reason"), "usage": data.get("usage"),
+                "limits": limits}
 
     @staticmethod
     def _detail(exc: urllib.error.HTTPError) -> str:
@@ -230,6 +236,7 @@ class MessageStream:
         self.blocks: dict[int, dict] = {}
         self.partial_json: dict[int, str] = {}
         self.stop_reason: str | None = None
+        self.usage: dict = {}
 
     def read(self, lines) -> dict:
         data: list[str] = []
@@ -243,7 +250,8 @@ class MessageStream:
         if data:
             self.handle(json.loads("\n".join(data)))
 
-        return {"content": [self.blocks[index] for index in sorted(self.blocks)], "stop_reason": self.stop_reason}
+        return {"content": [self.blocks[index] for index in sorted(self.blocks)], "stop_reason": self.stop_reason,
+                "usage": self.usage}
 
     def handle(self, event: dict) -> None:
         kind = event.get("type")
@@ -259,8 +267,14 @@ class MessageStream:
             self.apply(self.blocks[index], index, event["delta"])
         elif kind == "content_block_stop" and index in self.partial_json:
             self.blocks[index]["input"] = json.loads(self.partial_json.pop(index) or "{}")
+        elif kind == "message_start":
+            self.add_usage(event.get("message", {}).get("usage"))
         elif kind == "message_delta":
             self.stop_reason = event.get("delta", {}).get("stop_reason", self.stop_reason)
+            self.add_usage(event.get("usage"))
+
+    def add_usage(self, usage: dict | None) -> None:
+        self.usage.update({name: value for name, value in (usage or {}).items() if value is not None})
 
     def apply(self, block: dict, index: int, delta: dict) -> None:
         kind = delta.get("type")

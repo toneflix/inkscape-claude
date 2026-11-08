@@ -76,6 +76,7 @@ class FakeClaude(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(out)))
+        self.rate_limit_headers()
         self.end_headers()
         self.wfile.write(out)
 
@@ -102,9 +103,17 @@ class FakeClaude(BaseHTTPRequestHandler):
 
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
+        self.rate_limit_headers()
         self.end_headers()
         for name, data in events:
             self.wfile.write(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode())
+
+
+    def rate_limit_headers(self):
+        for name, limit, remaining in (("requests", 50, 49), ("input-tokens", 1000, 250)):
+            self.send_header(f"anthropic-ratelimit-{name}-limit", str(limit))
+            self.send_header(f"anthropic-ratelimit-{name}-remaining", str(remaining))
+            self.send_header(f"anthropic-ratelimit-{name}-reset", "2026-11-07T12:00:30Z")
 
 
 def tool_use(tool_id, name, **arguments):
@@ -280,3 +289,7 @@ def test_streaming_passes_text_on_and_rebuilds_the_message(fake_api, monkeypatch
     assert text["text"] == "Adding a box."
     assert (tool["name"], tool["input"]) == ("add_elements", {"svg_fragment": "<rect/>"})
     assert FakeClaude.requests[-1]["body"]["stream"] is True
+    assert response["usage"]["input_tokens"] == 10 and response["usage"]["output_tokens"] == 5
+    [limit] = response["limits"]
+    assert (limit.name, limit.used) == ("Rate limit (input tokens per minute)", 0.75)
+    assert limit.resets_at == 1794052830

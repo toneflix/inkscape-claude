@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp_server"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from inkscape_mcp.chat import ChatServer, ChatSession  # noqa: E402
+from inkscape_mcp.claude import ClaudeError  # noqa: E402
 from inkscape_mcp.cli import Inkscape  # noqa: E402
 from inkscape_mcp.svgdoc import SvgDocument  # noqa: E402
 from test_agent import ScriptedClient, done, tool_call  # noqa: E402
@@ -195,3 +196,32 @@ def test_the_reply_streams_and_the_window_reloads_after_each_change(tmp_path, mo
     assert events[-1] == ("text", "Added two squares.")
     assert live.reloads == 3, "after each of the two edits, not the outline, and once at the end"
     assert session.agent.on_text is None, "callbacks are only connected during the turn"
+
+
+class FailsOnce(ScriptedClient):
+    def send(self, system, messages, tools=None, on_text=None):
+        if not self.calls:
+            self.calls.append([])
+            raise ClaudeError("Claude API error 529: Overloaded")
+
+        return super().send(system, messages, tools, on_text)
+
+
+def test_a_failed_message_can_be_retried(tmp_path):
+    path = tmp_path / "drawing.svg"
+    SvgDocument.blank(200, 100).save(path)
+    session = ChatSession(path, FailsOnce([done("Added it.")]), Inkscape(), live=None)
+
+    with pytest.raises(ValueError, match="no failed message"):
+        session.retry()
+    with pytest.raises(ClaudeError, match="Overloaded"):
+        session.send("Add a star")
+
+    assert session.can_retry and session.transcript[-1]["retry"]
+
+    result = session.retry()
+
+    assert result["text"] == "Added it." and not session.can_retry
+    assert [entry["role"] for entry in session.transcript] == ["user", "system", "assistant"], \
+        "the message is not repeated in the conversation"
+    assert session.agent.messages[-2]["content"][-1]["text"] == "Add a star"

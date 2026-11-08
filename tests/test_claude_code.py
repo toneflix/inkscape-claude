@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp_server"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from inkscape_mcp.agent import TOOLS  # noqa: E402
 from inkscape_mcp.chat import ChatSession  # noqa: E402
@@ -16,6 +17,7 @@ from inkscape_mcp.claude import ClaudeClient, ClaudeError  # noqa: E402
 from inkscape_mcp.claude_code import ClaudeCode, ClaudeCodeAgent  # noqa: E402
 from inkscape_mcp.cli import Inkscape  # noqa: E402
 from inkscape_mcp.svgdoc import SvgDocument  # noqa: E402
+from test_images_usage import png  # noqa: E402
 
 MCP_SERVER = str(Path(__file__).resolve().parent.parent / "mcp_server")
 
@@ -26,8 +28,14 @@ import json, os, subprocess, sys
 
 args = sys.argv[1:]
 prompt = sys.stdin.read()
+content = None
+if "--input-format" in args:
+    message = json.loads(prompt)["message"]
+    content = [block["type"] for block in message["content"]]
+    prompt = message["content"][-1]["text"]
 with open(os.environ["FAKE_CLAUDE_LOG"], "a") as log:
-    log.write(json.dumps({"args": args, "prompt": prompt, "api_key": os.environ.get("ANTHROPIC_API_KEY")}) + "\\n")
+    log.write(json.dumps({"args": args, "prompt": prompt, "content": content,
+                          "api_key": os.environ.get("ANTHROPIC_API_KEY")}) + "\\n")
 
 config = json.loads(next(a for a in args if a.startswith("--mcp-config=")).split("=", 1)[1])
 server = config["mcpServers"]["inkscape"]
@@ -44,8 +52,13 @@ def emit(event):
 
 rpc(0, "initialize", {"protocolVersion": "2025-06-18"})
 emit({"type": "system", "subtype": "init", "mcp_servers": [{"name": "inkscape", "status": "connected"}]})
+emit({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour",
+      "unifiedWindows": {"five_hour": {"utilization": 0.25, "resetsAt": 1794052800, "status": "allowed"},
+                         "seven_day": {"utilization": 0.5, "resetsAt": 1794400000, "status": "allowed"}}}})
+usage = {"input_tokens": 3, "cache_read_input_tokens": 20000, "cache_creation_input_tokens": 1000,
+         "output_tokens": 50}
 for number, (name, arguments) in enumerate(json.loads(os.environ["FAKE_CLAUDE_CALLS"]), 1):
-    emit({"type": "assistant", "message": {"content": [
+    emit({"type": "assistant", "parent_tool_use_id": None, "message": {"usage": usage, "content": [
         {"type": "tool_use", "id": f"t{number}", "name": f"mcp__inkscape__{name}", "input": arguments}]}})
     result = rpc(number, "tools/call", {"name": name, "arguments": arguments})
     emit({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": f"t{number}",
@@ -55,7 +68,10 @@ bridge.wait()
 for word in os.environ["FAKE_CLAUDE_REPLY"].split(" "):
     emit({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
                                             "delta": {"type": "text_delta", "text": word + " "}}})
-emit({"type": "result", "subtype": "success", "is_error": False, "result": os.environ["FAKE_CLAUDE_REPLY"]})
+emit({"type": "result", "subtype": "success", "is_error": False, "result": os.environ["FAKE_CLAUDE_REPLY"],
+      "modelUsage": {"claude-opus-5-5": {"inputTokens": 3, "outputTokens": 50, "cacheReadInputTokens": 20000,
+                                         "contextWindow": 1000000},
+                     "claude-haiku-4-5": {"inputTokens": 10, "outputTokens": 5, "contextWindow": 200000}}})
 '''
 
 
@@ -137,7 +153,7 @@ def test_chat_through_claude_code_edits_resumes_and_undoes(drawing, fake_claude)
     assert [(step["tool"], step["failed"]) for step in first["steps"]] == [("add_elements", False),
                                                                           ("delete_elements", True)]
     assert first["steps"][0]["summary"] == "Added: box"
-    assert [kind for kind, _ in events] == ["step", "step", "text", "text", "text", "text"]
+    assert [kind for kind, _ in events if kind != "usage"] == ["step", "step", "text", "text", "text", "text"]
     assert "".join(payload for kind, payload in events if kind == "text") == "Added a teal box. "
     assert one["prompt"] == "Add a box" and one["api_key"] is None, "the subscription is used, not the key"
     assert ["--model", "opus", "--effort", "low"] == one["args"][5:9]
@@ -191,3 +207,32 @@ def test_finds_claude_from_the_configured_path(tmp_path, monkeypatch):
 
     assert ClaudeCode.find(str(binary)) == str(binary)
     assert str(binary) not in ClaudeCode.candidates()
+
+
+def test_claude_code_gets_images_and_reports_context_and_limits(drawing, fake_claude, tmp_path):
+    script_turn, runs = fake_claude
+    session = ChatSession(drawing, ClaudeClient("", model="opus"), Inkscape(), live=None, backend="claude-code")
+    source = tmp_path / "logo.png"
+    source.write_bytes(png(40, 20))
+    image = session.attachments.add(source)
+
+    script_turn("Placed the logo.", ("place_image", {"name": "logo.png", "width": 80}))
+    events = []
+    result = session.send("Put this on the page", lambda kind, payload: events.append((kind, payload)), [image])
+
+    [run] = runs()
+    assert run["content"] == ["image", "text"] and run["args"][-2:] == ["--input-format", "stream-json"]
+    assert "Attached images: logo.png" in run["prompt"]
+    assert result["steps"][0]["summary"].startswith("Placed logo.png as logo")
+    assert SvgDocument.load(drawing).find("logo").get("width") == "80"
+
+    usage = result["usage"]
+    assert (usage["context_tokens"], usage["context_window"]) == (21053, 1000000)
+    assert [(limit["name"], limit["used"]) for limit in usage["limits"]] == [("5-hour limit", 0.25),
+                                                                            ("Weekly limit", 0.5)]
+    assert "usage" in [kind for kind, _ in events]
+
+    script_turn("Hi.")
+    session.send("Hello")
+
+    assert "--input-format" not in runs()[1]["args"], "a message without images is sent as plain text"

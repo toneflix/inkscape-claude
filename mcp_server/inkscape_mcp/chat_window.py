@@ -7,7 +7,9 @@ import importlib.machinery
 import sys
 import threading
 import types
+from pathlib import Path
 from typing import Callable
+from urllib.parse import unquote, urlparse
 
 
 def skip_gio_unix_overrides() -> None:
@@ -38,8 +40,10 @@ try:
 except Exception:
     Gtk = None
 
+from .attachments import MAX_BYTES, Attachment
 from .chat import EXPECTED_ERRORS, ChatSession
 from .claude import BACKENDS, EFFORTS, ClaudeError, Config
+from .usage import Limit
 
 STYLE = b"""
 .bubble { padding: 8px 10px; border-radius: 8px; }
@@ -49,9 +53,16 @@ STYLE = b"""
 .steps { color: #64748b; font-size: smaller; }
 .badge { color: #64748b; }
 .badge.on { color: #15803d; }
+levelbar block.filled.ok { background: #16a34a; border-color: #16a34a; }
+levelbar block.filled.warn { background: #d97706; border-color: #d97706; }
+levelbar block.filled.over { background: #dc2626; border-color: #dc2626; }
 """
 
 PREVIEW_WIDTH = 340
+THUMBNAIL_SIZE = 56
+IMAGE_SIZE = 160
+LARGEST_SIDE = 2048
+IMAGE_PATTERNS = ("*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.PNG", "*.JPG", "*.JPEG", "*.GIF", "*.WEBP")
 
 EFFORT_LABELS = {"low": "Low (fastest)", "medium": "Medium (default)", "high": "High", "xhigh": "Extra high",
                  "max": "Max (slowest)"}
@@ -120,6 +131,92 @@ class SettingsDialog:
         if api_key:
             values["api_key"] = api_key
         Config.save(**values)
+
+
+class UsagePanel:
+    """Context used of the model's window and each usage limit, with a bar and when it resets."""
+
+    def __init__(self):
+        self.box = Gtk.Grid(row_spacing=2, column_spacing=10, no_show_all=True)
+        self.usage: dict | None = None
+
+    def update(self, usage: dict | None) -> bool:
+        if usage and (usage.get("context_tokens") or usage.get("limits")):
+            self.usage = usage
+            self.render()
+
+        return False
+
+    def refresh(self) -> bool:
+        if self.usage:
+            self.render()
+
+        return True
+
+    def render(self) -> None:
+        for child in self.box.get_children():
+            child.destroy()
+
+        rows = [(self.usage["context_text"], self.usage.get("context_share"))]
+        rows += [(Limit(**limit).describe(), limit["used"]) for limit in self.usage.get("limits", [])]
+        for row, (text, share) in enumerate(rows):
+            label = Gtk.Label(label=text, xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END,
+                              tooltip_text=text)
+            label.get_style_context().add_class("steps")
+            self.box.attach(label, 0, row, 1, 1)
+            if share is not None:
+                self.box.attach(self.bar(share), 1, row, 1, 1)
+        for child in self.box.get_children():
+            child.show_all()
+        self.box.show()
+
+    @staticmethod
+    def bar(share: float):
+        bar = Gtk.LevelBar(min_value=0, max_value=1, value=max(0.0, min(1.0, share)), valign=Gtk.Align.CENTER)
+        bar.set_size_request(90, 6)
+        for name in (Gtk.LEVEL_BAR_OFFSET_LOW, Gtk.LEVEL_BAR_OFFSET_HIGH, Gtk.LEVEL_BAR_OFFSET_FULL):
+            bar.remove_offset_value(name)
+        bar.add_offset_value("ok", 0.7)
+        bar.add_offset_value("warn", 0.9)
+        bar.add_offset_value("over", 1.0)
+
+        return bar
+
+
+class PendingImages:
+    """Images attached to the message being written, shown as thumbnails above the message box."""
+
+    def __init__(self, chat: ChatWindow):
+        self.chat = chat
+        self.images: list[Attachment] = []
+        self.box = Gtk.Box(spacing=6, no_show_all=True)
+
+    def add(self, image: Attachment) -> None:
+        self.images.append(image)
+        remove = Gtk.Button(label="×", relief=Gtk.ReliefStyle.NONE, tooltip_text=f"Remove {image.name}",
+                            valign=Gtk.Align.START)
+        chip = Gtk.Box(spacing=0)
+        chip.pack_start(Gtk.Image.new_from_pixbuf(ChatWindow.thumbnail(image.path, THUMBNAIL_SIZE)), False, False, 0)
+        chip.pack_start(remove, False, False, 0)
+        chip.set_tooltip_text(image.name)
+        remove.connect("clicked", lambda *_: self.remove(image, chip))
+        self.box.pack_start(chip, False, False, 0)
+        chip.show_all()
+        self.box.show()
+
+    def remove(self, image: Attachment, chip) -> None:
+        self.images.remove(image)
+        chip.destroy()
+        if not self.images:
+            self.box.hide()
+
+    def take(self) -> list[Attachment]:
+        images, self.images = self.images, []
+        for child in self.box.get_children():
+            child.destroy()
+        self.box.hide()
+
+        return images
 
 
 class LiveReply:
@@ -193,6 +290,7 @@ class ChatWindow:
         header = Gtk.Box(spacing=6)
         header.pack_start(self.badge, True, True, 0)
         header.pack_end(settings_button, False, False, 0)
+        self.usage = UsagePanel()
 
         self.messages = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
         self.scroller = Gtk.ScrolledWindow(vexpand=True)
@@ -202,8 +300,10 @@ class ChatWindow:
         self.prompt = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False)
         self.prompt.set_size_request(-1, 70)
         self.prompt.connect("key-press-event", self.on_key)
+        self.prompt.connect("paste-clipboard", self.on_paste)
         prompt_frame = Gtk.Frame()
         prompt_frame.add(self.prompt)
+        self.pending = PendingImages(self)
 
         self.status = Gtk.Label(xalign=0)
         self.spinner = Gtk.Spinner()
@@ -212,28 +312,41 @@ class ChatWindow:
         self.send_button.connect("clicked", lambda *_: self.send())
         self.undo_button = Gtk.Button(label="Undo")
         self.undo_button.connect("clicked", lambda *_: self.undo())
+        self.image_button = Gtk.Button(label="Image…", tooltip_text="Attach images for Claude to see or place. "
+                                                                     "You can also paste or drop them here.")
+        self.image_button.connect("clicked", lambda *_: self.choose_images())
 
         actions = Gtk.Box(spacing=6)
         actions.pack_start(self.spinner, False, False, 0)
         actions.pack_start(self.status, True, True, 0)
         actions.pack_end(self.send_button, False, False, 0)
         actions.pack_end(self.undo_button, False, False, 0)
+        actions.pack_end(self.image_button, False, False, 0)
 
         layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
         layout.pack_start(header, False, False, 0)
+        layout.pack_start(self.usage.box, False, False, 0)
         layout.pack_start(self.scroller, True, True, 0)
+        layout.pack_start(self.pending.box, False, False, 0)
         layout.pack_start(prompt_frame, False, False, 0)
         layout.pack_start(actions, False, False, 0)
         self.window.add(layout)
 
         self.was_live = session.live_enabled
+        self.retry_buttons: list = []
         self.add_message("system", "Ask for a change to the drawing. Enter sends, Shift+Enter adds a line.")
         for entry in session.transcript:
-            self.add_message(entry["role"], entry["text"], entry.get("steps"))
+            self.add_message(entry["role"], entry["text"], entry.get("steps"),
+                             retry=entry.get("retry") and entry is session.transcript[-1])
         if session.backend == "claude-code":
             self.add_message("system", self.describe_settings())
         self.refresh_badge()
+        self.usage.update(session.usage.to_dict())
+        self.window.drag_dest_set(Gtk.DestDefaults.ALL, [], Gdk.DragAction.COPY)
+        self.window.drag_dest_add_uri_targets()
+        self.window.connect("drag-data-received", self.on_drop)
         GLib.timeout_add_seconds(2, self.watch_inkscape)
+        GLib.timeout_add_seconds(30, self.usage.refresh)
         if session.needs_key:
             GLib.idle_add(self.ask_for_key)
 
@@ -279,25 +392,92 @@ class ChatWindow:
 
         return False
 
+    def choose_images(self) -> None:
+        dialog = Gtk.FileChooserNative(title="Attach images", transient_for=self.window,
+                                       action=Gtk.FileChooserAction.OPEN, select_multiple=True)
+        images = Gtk.FileFilter()
+        images.set_name("Images (PNG, JPEG, GIF, WebP)")
+        for pattern in IMAGE_PATTERNS:
+            images.add_pattern(pattern)
+        dialog.add_filter(images)
+        if dialog.run() == Gtk.ResponseType.ACCEPT:
+            for name in dialog.get_filenames():
+                self.attach(Path(name))
+        dialog.destroy()
+
+    def on_paste(self, _widget) -> None:
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        if clipboard.wait_is_image_available():
+            image = clipboard.wait_for_image()
+            if image is not None:
+                self.prompt.stop_emission_by_name("paste-clipboard")
+                self.attach_pixbuf("pasted.png", image)
+        elif clipboard.wait_is_uris_available():
+            uris = clipboard.wait_for_uris() or []
+            if uris:
+                self.prompt.stop_emission_by_name("paste-clipboard")
+                self.attach_uris(uris)
+
+    def on_drop(self, _widget, _context, _x, _y, data, _info, _time) -> None:
+        self.attach_uris(data.get_uris() or [])
+
+    def attach_uris(self, uris: list[str]) -> None:
+        for uri in uris:
+            url = urlparse(uri)
+            if url.scheme == "file":
+                self.attach(Path(unquote(url.path).lstrip("/") if url.path[2:3] == ":" else unquote(url.path)))
+
+    def attach(self, path: Path) -> None:
+        """Attaches an image file, shrinking it first when it is over 5 MB."""
+        try:
+            if path.is_file() and path.stat().st_size > MAX_BYTES:
+                image = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), LARGEST_SIDE, LARGEST_SIDE, True)
+                self.attach_pixbuf(path.name, image)
+                return
+            self.pending.add(self.session.attachments.add(path))
+        except (ValueError, OSError, GLib.Error) as exc:
+            self.add_message("system", f"Error: could not attach {path.name}: {getattr(exc, 'message', exc)}")
+
+    def attach_pixbuf(self, name: str, image) -> None:
+        kind = "png" if image.get_has_alpha() else "jpeg"
+        options = ([], []) if kind == "png" else (["quality"], ["90"])
+        try:
+            _, data = image.save_to_bufferv(kind, *options)
+            stem = Path(name).stem or "image"
+            self.pending.add(self.session.attachments.add_data(f"{stem}.{'png' if kind == 'png' else 'jpg'}",
+                                                               bytes(data)))
+        except (ValueError, OSError, GLib.Error) as exc:
+            self.add_message("system", f"Error: could not attach {name}: {getattr(exc, 'message', exc)}")
+
     def send(self) -> None:
         buffer = self.prompt.get_buffer()
         text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False).strip()
-        if not text or not self.send_button.get_sensitive():
+        if not (text or self.pending.images) or not self.send_button.get_sensitive():
             return
 
         buffer.set_text("")
-        self.add_message("user", text)
+        images = self.pending.take()
+        self.add_message("user", text or "Here is an image.", images=[image.path for image in images])
+        self.reply("Claude is working…", lambda on_event: self.session.send(text, on_event, images))
+
+    def retry(self) -> None:
+        self.reply("Trying again…", self.session.retry)
+
+    def reply(self, status: str, task: Callable) -> None:
+        """Runs a turn with its answer showing as it is written, and a Retry button if it fails."""
         live = LiveReply(self)
 
         def on_event(kind: str, payload) -> None:
-            GLib.idle_add(live.update, kind, payload, priority=GLib.PRIORITY_DEFAULT)
+            target = self.usage.update if kind == "usage" else lambda payload: live.update(kind, payload)
+            GLib.idle_add(target, payload, priority=GLib.PRIORITY_DEFAULT)
 
-        self.work("Claude is working…", lambda: self.session.send(text, on_event), live)
+        self.work(status, lambda: task(on_event), live, retryable=True)
 
     def undo(self) -> None:
         self.work("Undoing…", self.session.undo)
 
-    def work(self, status: str, task: Callable[[], dict], live: LiveReply | None = None) -> None:
+    def work(self, status: str, task: Callable[[], dict], live: LiveReply | None = None,
+             retryable: bool = False) -> None:
         """Runs a chat call off the GTK thread and shows its result, in place of `live`, when it is done."""
         self.set_busy(True, status)
 
@@ -305,7 +485,7 @@ class ChatWindow:
             try:
                 result = task()
             except EXPECTED_ERRORS as exc:
-                result = {"role": "system", "text": f"Error: {exc}"}
+                result = {"role": "system", "text": f"Error: {exc}", "retry": retryable and self.session.can_retry}
             GLib.idle_add(self.finish, result, live, priority=GLib.PRIORITY_DEFAULT)
 
         threading.Thread(target=background, daemon=True).start()
@@ -315,7 +495,8 @@ class ChatWindow:
         if live:
             live.remove()
         self.add_message(result.get("role", "system"), result.get("text", ""), result.get("steps"),
-                         result.get("preview"), result.get("selection"))
+                         result.get("preview"), result.get("selection"), retry=result.get("retry"))
+        self.usage.update(result.get("usage"))
         self.refresh_badge()
 
         return False
@@ -324,13 +505,19 @@ class ChatWindow:
         self.status.set_text(status)
         self.send_button.set_sensitive(not busy)
         self.undo_button.set_sensitive(not busy)
+        self.image_button.set_sensitive(not busy)
+        if busy:
+            for button in self.retry_buttons:
+                button.destroy()
+            self.retry_buttons.clear()
         if busy:
             self.spinner.start()
         else:
             self.spinner.stop()
 
     def add_message(self, role: str, text: str, steps: list[dict] | None = None, preview: str | None = None,
-                    selection: list[str] | None = None) -> None:
+                    selection: list[str] | None = None, images: list[Path] | None = None,
+                    retry: bool = False) -> None:
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         bubble.get_style_context().add_class("bubble")
         bubble.get_style_context().add_class(role)
@@ -338,6 +525,15 @@ class ChatWindow:
         label = Gtk.Label(label=text, xalign=0, wrap=True, selectable=True, can_focus=False)
         label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
         bubble.pack_start(label, False, False, 0)
+
+        if images:
+            strip = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=2, column_spacing=4,
+                                row_spacing=4)
+            for path in images:
+                picture = Gtk.Image.new_from_pixbuf(self.thumbnail(path, IMAGE_SIZE))
+                picture.set_tooltip_text(path.name)
+                strip.add(picture)
+            bubble.pack_start(strip, False, False, 0)
 
         if selection:
             selected = Gtk.Label(label="Your selection: " + ", ".join(selection), xalign=0, wrap=True,
@@ -355,6 +551,13 @@ class ChatWindow:
 
         if preview:
             bubble.pack_start(Gtk.Image.new_from_pixbuf(self.pixbuf(preview)), False, False, 0)
+
+        if retry:
+            button = Gtk.Button(label="Retry", halign=Gtk.Align.START,
+                                tooltip_text="Send the message again. Changes Claude already made stay.")
+            button.connect("clicked", lambda *_: self.retry())
+            self.retry_buttons.append(button)
+            bubble.pack_start(button, False, False, 0)
 
         row = Gtk.Box()
         if role == "user":
@@ -397,6 +600,10 @@ class ChatWindow:
         self.refresh_badge()
 
         return True
+
+    @staticmethod
+    def thumbnail(path: Path, size: int):
+        return GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), size, size, True)
 
     @staticmethod
     def pixbuf(png_base64: str):

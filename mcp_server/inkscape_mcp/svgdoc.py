@@ -21,6 +21,8 @@ PREFIXES = {"inkscape": INKSCAPE_NS, "sodipodi": SODIPODI_NS, "xlink": XLINK_NS}
 
 NON_VISUAL = {"defs", "metadata", "namedview", "style", "title", "desc"}
 
+EMBEDDED_DATA = re.compile(r'(href="data:[^;,"]*;base64,)([^"]{200,})"')
+
 PARSER = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=True)
 
 
@@ -188,7 +190,26 @@ class SvgDocument:
         return hits[0]
 
     def element_source(self, element_id: str) -> str:
-        return etree.tostring(self.find(element_id), encoding="unicode")
+        """The element's markup, with embedded image data shortened so it stays readable."""
+        source = etree.tostring(self.find(element_id), encoding="unicode")
+
+        return EMBEDDED_DATA.sub(lambda match: f'{match.group(1)}…" (embedded image, '
+                                               f'{len(match.group(2)) * 3 // 4096} KB)', source)
+
+    def add_image(self, data_uri: str, box: Box, element_id: str, label: str | None = None) -> str:
+        """Adds an <image> with the data embedded, stretched to box (x, y, width, height) in user units."""
+        x, y, width, height = box
+        image = etree.SubElement(self.default_parent(), f"{{{SVG_NS}}}image")
+        for name, value in (("id", element_id), ("x", x), ("y", y), ("width", width), ("height", height)):
+            image.set(name, value if isinstance(value, str) else f"{value:.6g}")
+        image.set("preserveAspectRatio", "none")
+        if label:
+            image.set(f"{{{INKSCAPE_NS}}}label", label)
+        image.set(f"{{{XLINK_NS}}}href", data_uri)
+
+        self._ensure_unique_ids(image)
+
+        return image.get("id")
 
     def default_parent(self):
         layers = self.root.xpath("./svg:g[@inkscape:groupmode='layer']",

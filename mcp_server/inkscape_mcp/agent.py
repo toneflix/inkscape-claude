@@ -7,10 +7,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from .attachments import Attachments
 from .claude import ClaudeClient
 from .cli import InkscapeError
 from .operations import BOOLEAN_ACTIONS, DocumentOperations
 from .svgdoc import SvgError
+from .usage import Usage, context_window
 
 SYSTEM_PROMPT = """You are an illustrator working in Inkscape on one SVG document, using the tools provided. \
 Carry out the person's request by editing the document with them.
@@ -23,6 +25,9 @@ each page. Use add_page, update_page and delete_page to change pages, and move_t
 - Make focused edits: add_elements, update_element, replace_element and delete_elements for markup; \
 boolean_operation, align_objects and run_actions when Inkscape does the job better than hand-written geometry.
 - Keep the ids, labels and layers of anything you do not need to change. Give new elements short, descriptive ids.
+- The person can attach images to a message, usually as reference: a sketch, a style, a photo of what they \
+want. Use them as context. Only put one in the drawing, with place_image and its file name, when they ask for \
+that; trace or redraw it with paths when they ask for vector artwork.
 - Write valid SVG 1.1 that Inkscape can edit. No <script>, event handler attributes, <foreignObject> or \
 external URLs.
 - Before you finish, call render_preview once (it shows every page, or one page if you pass page) and fix \
@@ -93,6 +98,11 @@ TOOLS = [
      "input_schema": schema({"element_ids": ID_LIST})},
     {"name": "render_preview", "description": "Render all pages, one page, or one element to an image so you can "
      "see it.", "input_schema": schema({"width": {"type": "integer"}, "page": PAGE, "element_id": {"type": "string"}})},
+    {"name": "place_image", "description": "Embed an image the person attached in the drawing, by file name. "
+     "Without a size it keeps its pixel size, shrunk to fit the page; give width or height to scale it, both to "
+     "stretch it. Without x and y it is centred on the page. Move or resize it later with update_element.",
+     "input_schema": schema({"name": {"type": "string"}, "x": NUMBER, "y": NUMBER, "width": NUMBER, "height": NUMBER,
+                             "page": PAGE, "element_id": {"type": "string"}}, ["name"])},
     {"name": "undo_last_change", "description": "Revert the document to before the most recent edit.",
      "input_schema": schema({})},
 ]
@@ -122,9 +132,10 @@ def summary(content) -> str:
 class DrawingTools:
     """The drawing tools in TOOLS, working on one file. Shared by the API agent and the Claude Code bridge."""
 
-    def __init__(self, operations: DocumentOperations, path: Path):
+    def __init__(self, operations: DocumentOperations, path: Path, attachments: Attachments | None = None):
         self.operations = operations
         self.path = path
+        self.attachments = attachments
 
     def call(self, name: str, arguments: dict | None = None) -> str | list[dict]:
         """Runs a tool and returns its text, or image blocks for render_preview. Raises EXPECTED_ERRORS on failure."""
@@ -202,6 +213,17 @@ class DrawingTools:
         return [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                              "data": base64.b64encode(png).decode("ascii")}}]
 
+    def tool_place_image(self, name: str, x: float | None = None, y: float | None = None, width: float | None = None,
+                         height: float | None = None, page: str | int | None = None,
+                         element_id: str | None = None) -> str:
+        if self.attachments is None:
+            raise ValueError("No images are attached in this conversation.")
+
+        placed, (left, top, w, h) = self.operations.place_image(self.path, self.attachments.find(name), x, y, width,
+                                                                height, page, element_id)
+
+        return f"Placed {name} as {placed} at ({left:.1f}, {top:.1f}), {w:.1f} x {h:.1f}."
+
     def tool_undo_last_change(self) -> str:
         remaining = self.operations.undo(self.path)
 
@@ -213,9 +235,12 @@ class DrawingAgent:
 
     def __init__(self, client: ClaudeClient, operations: DocumentOperations, path: Path, max_steps: int = 40,
                  on_step: Callable[[Step], None] | None = None, system: str = SYSTEM_PROMPT,
-                 on_text: Callable[[str], None] | None = None):
+                 on_text: Callable[[str], None] | None = None, attachments: Attachments | None = None,
+                 on_usage: Callable[[Usage], None] | None = None):
         self.client = client
-        self.tools = DrawingTools(operations, path)
+        self.tools = DrawingTools(operations, path, attachments)
+        self.usage = Usage()
+        self.on_usage = on_usage
         self.max_steps = max_steps
         self.on_step = on_step
         self.on_text = on_text
@@ -229,6 +254,7 @@ class DrawingAgent:
         for number in range(1, self.max_steps + 2):
             response = self.client.send(self.system, self.messages, TOOLS, on_text=self.on_text)
             self.messages.append({"role": "assistant", "content": response["content"]})
+            self.record(response)
 
             if response.get("stop_reason") != "tool_use":
                 return TurnResult(self.client.finish(response), steps)
@@ -246,6 +272,14 @@ class DrawingAgent:
             self.messages.append({"role": "user", "content": results})
 
         return TurnResult(f"Stopped after {self.max_steps} steps.", steps)
+
+    def record(self, response: dict) -> None:
+        if not (response.get("usage") or response.get("limits")):
+            return
+
+        self.usage.record(response.get("usage"), response.get("limits"), context_window(self.client.model))
+        if self.on_usage:
+            self.on_usage(self.usage)
 
     def execute(self, block: dict, steps: list[Step]) -> dict:
         name = block.get("name", "")
