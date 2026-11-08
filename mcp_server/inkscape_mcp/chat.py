@@ -10,6 +10,7 @@ import base64
 import json
 import re
 import secrets
+import shutil
 import sys
 import tempfile
 import threading
@@ -91,8 +92,8 @@ class ChatSession:
         elif args.draft:
             notice = (f"Your drawing had not been saved, so the chat saved it as {document} and opened it in a new "
                       "Inkscape window that it keeps in sync. Work in that window and close the untitled one. To keep it "
-                      "under another name, use File > Save As there, then open the chat again from that window: this "
-                      "chat stays with the Untitled file.")
+                      "under another name, use the chat's Save as button: the chat follows the file. After File > "
+                      "Save As in Inkscape instead, open the chat again from that window.")
         if live is not None and (isinstance(live, ShellInkscape) or not args.attach) and window is None:
             try:
                 window = live.open(document)
@@ -151,6 +152,50 @@ class ChatSession:
             self.agent = self.make_agent(self.client, backend)
             self.save()
 
+    def save_as(self, target: Path) -> dict:
+        """Saves the drawing under a new name and carries on there: the chat history moves with it, and the
+        Inkscape window the chat follows is swapped for one showing the new file."""
+        target = Path(target).expanduser().resolve()
+        if target.suffix.lower() != ".svg":
+            target = target.with_name(target.name + ".svg")
+        if target == self.path:
+            raise ValueError("That is the file the chat already works on.")
+
+        with self.lock:
+            self.sync_from_inkscape()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self.path, target)
+
+            old_window = self.window
+            self.path = target
+            self.agent.move_to(target)
+            if self.store:
+                self.store = self.store.move_to(target)
+                self.attachments.folder = self.store.attachments
+            self.notes.append(f"(The drawing is now saved as {target.name}.)")
+
+            text = f"Saved as {target}. The chat works on this file from now on."
+            if self.live is not None:
+                text += self.switch_window(target, old_window)
+            self.transcript.append({"role": "system", "text": text})
+            self.save()
+
+            return {"role": "system", "text": text}
+
+    def switch_window(self, target: Path, old_window: int | None) -> str:
+        """Opens `target` in Inkscape for the chat to follow, and closes the old window where Inkscape allows."""
+        try:
+            self.window = self.live.open(target)
+        except LiveError as exc:
+            return f" Open it in Inkscape yourself to keep working on it ({exc})."
+
+        try:
+            self.live.close_window(old_window)
+        except LiveError:
+            return " It is open in a new Inkscape window; close the old one."
+
+        return " It is open in a new Inkscape window in place of the old one."
+
     def restore(self) -> None:
         """Brings back this drawing's saved chat. What Claude remembers only carries over on the same backend."""
         data = self.store.load() if self.store else {}
@@ -204,7 +249,8 @@ class ChatSession:
         return self.agent.usage
 
     def state(self) -> dict:
-        return {"document": str(self.path), "live": self.live_enabled, "transcript": self.transcript,
+        return {"document": str(self.path), "name": self.path.name, "live": self.live_enabled,
+                "transcript": self.transcript,
                 "usage": self.usage.to_dict(), "can_retry": self.can_retry, "can_undo": self.can_undo}
 
     @property
@@ -419,6 +465,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         routes = {"/api/message": self.send_message,
                   "/api/retry": self.retry_message,
                   "/api/clear": lambda body: self.session.clear(),
+                  "/api/save-as": lambda body: self.session.save_as(Path(str(body.get("path") or ""))),
                   "/api/undo": lambda body: self.session.undo()}
         route = routes.get(urlparse(self.path).path)
         if route is None:

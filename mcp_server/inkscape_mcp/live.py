@@ -163,6 +163,13 @@ class LiveInkscape:
 
         self.run(["select-clear", "file-rebase:true"])
 
+    def close_window(self, window: int | None) -> None:
+        """Closes a window's document. Only possible where Inkscape publishes window actions (Linux)."""
+        if not window or window not in self.windows():
+            raise LiveError("This Inkscape cannot close a window over D-Bus.")
+
+        self.activate("document-close", target="window", number=window)
+
     def open(self, path: Path) -> int | None:
         """Open a file in the running Inkscape, or start Inkscape with it. Returns the new window number."""
         controllable = bool(self.gdbus)

@@ -358,11 +358,15 @@ class ChatWindow:
         self.new_button = icon_button("square-pen", tooltip="New chat: Claude forgets this drawing's conversation",
                                       flat=True)
         self.new_button.connect("clicked", lambda *_: self.new_chat())
+        self.save_button = icon_button("save", tooltip="Save as: save the drawing under a new name; the chat and its "
+                                                        "Inkscape window follow it", flat=True)
+        self.save_button.connect("clicked", lambda *_: self.choose_save_location())
         header = Gtk.Box(spacing=6)
         header.pack_start(self.badge, True, True, 0)
         self.usage = UsagePanel()
         header.pack_end(settings_button, False, False, 0)
         header.pack_end(self.new_button, False, False, 0)
+        header.pack_end(self.save_button, False, False, 0)
         header.pack_end(self.usage.button, False, False, 0)
 
         self.messages = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
@@ -430,6 +434,21 @@ class ChatWindow:
                              images=[path for path in images if path.is_file()],
                              retry=entry.get("retry") and entry is self.session.transcript[-1] and
                              self.session.can_retry)
+
+    def choose_save_location(self) -> None:
+        dialog = Gtk.FileChooserNative(title="Save the drawing as", transient_for=self.window,
+                                       action=Gtk.FileChooserAction.SAVE, do_overwrite_confirmation=True)
+        dialog.set_current_folder(str(self.session.path.parent))
+        dialog.set_current_name(self.session.path.name)
+        drawings = Gtk.FileFilter()
+        drawings.set_name("Inkscape SVG")
+        drawings.add_pattern("*.svg")
+        dialog.add_filter(drawings)
+        chosen = dialog.get_filename() if dialog.run() == Gtk.ResponseType.ACCEPT else None
+        dialog.destroy()
+
+        if chosen:
+            self.work("Saving…", lambda: self.session.save_as(Path(chosen)))
 
     def new_chat(self) -> None:
         if self.session.transcript:
@@ -608,6 +627,8 @@ class ChatWindow:
         self.undo_button.set_visible(self.session.can_undo)
         self.image_button.set_sensitive(not busy)
         self.new_button.set_sensitive(not busy)
+        self.save_button.set_sensitive(not busy)
+        self.window.set_title(f"Claude: {self.session.path.name}")
         if busy:
             for button in self.retry_buttons:
                 button.destroy()

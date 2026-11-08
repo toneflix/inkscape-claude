@@ -149,6 +149,11 @@ class ShellInkscape:
 
         return number
 
+    def close_window(self, number: int | None) -> None:
+        window = self._windows.pop(number, None)
+        if window is not None:
+            window.close()
+
     def run(self, actions: list[str], window: int | None = None) -> list[str]:
         steps = Inkscape.normalize_actions(actions)
         self._window(window).run(steps)

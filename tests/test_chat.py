@@ -227,3 +227,62 @@ def test_a_failed_message_can_be_retried(tmp_path):
     assert [entry["role"] for entry in session.transcript] == ["user", "system", "assistant"], \
         "the message is not repeated in the conversation"
     assert session.agent.messages[-2]["content"][-1]["text"] == "Add a star"
+
+
+class WindowLive(MarkingLive):
+    """A live window that can be swapped: records the files opened and the windows closed."""
+
+    def __init__(self, path, can_close=True):
+        super().__init__(path, [])
+        self.opened, self.closed, self.can_close = [], [], can_close
+
+    def open(self, path):
+        self.opened.append(path)
+        self.path = path
+        return len(self.opened) + 1
+
+    def close_window(self, window):
+        from inkscape_mcp.live import LiveError
+
+        if not self.can_close:
+            raise LiveError("cannot close")
+        self.closed.append(window)
+
+
+def test_save_as_moves_the_drawing_the_chat_and_the_window(tmp_path):
+    from inkscape_mcp.chat_store import ChatStore
+
+    draft = tmp_path / "Untitled.svg"
+    SvgDocument.blank(200, 100).save(draft)
+    store = ChatStore(draft, tmp_path / "chats")
+    live = WindowLive(draft)
+    session = ChatSession(draft, ScriptedClient([tool_call("a", "add_elements", svg_fragment='<rect id="box"/>'),
+                                                 done("Added."), done("Still here.")]),
+                          Inkscape(), live, window=1, store=store)
+    session.send("Add a box")
+
+    result = session.save_as(tmp_path / "work" / "poster")
+
+    target = tmp_path / "work" / "poster.svg"
+    assert result["text"].startswith(f"Saved as {target}.") and "in place of the old one" in result["text"]
+    assert SvgDocument.load(target).has("box") and session.path == target
+    assert live.opened == [target] and live.closed == [1] and session.window == 2
+    assert not store.file.exists() and store.folder.is_dir(), "the old folder stays for Claude Code's session"
+
+    session.send("Are you there?")
+
+    assert session.agent.tools.path == target
+    restored = ChatSession(target, ScriptedClient([]), Inkscape(), None, store=ChatStore(target, tmp_path / "chats"))
+    assert [entry["text"] for entry in restored.transcript][:2] == ["Add a box", "Added."]
+    assert ChatSession(draft, ScriptedClient([]), Inkscape(), None, store=store).transcript == []
+
+    with pytest.raises(ValueError, match="already works on"):
+        session.save_as(target)
+
+
+def test_save_as_says_to_close_the_old_window_where_inkscape_cannot(tmp_path):
+    path = tmp_path / "drawing.svg"
+    SvgDocument.blank(200, 100).save(path)
+    session = ChatSession(path, ScriptedClient([]), Inkscape(), WindowLive(path, can_close=False))
+
+    assert session.save_as(tmp_path / "copy.svg")["text"].endswith("close the old one.")

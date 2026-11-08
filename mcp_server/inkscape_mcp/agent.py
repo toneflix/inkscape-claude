@@ -250,6 +250,9 @@ class DrawingAgent:
     def state(self) -> dict:
         return {"messages": self.messages}
 
+    def move_to(self, path: Path) -> None:
+        self.tools.path = path
+
     def restore(self, state: dict) -> None:
         self.messages = list(state.get("messages") or [])
 

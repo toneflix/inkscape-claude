@@ -50,7 +50,7 @@
   header { position: relative; }
   header h1 { margin: 0; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
   .logo { width: 22px; height: 22px; }
-  header h1, #doc { padding-right: 96px; }
+  header h1, #doc { padding-right: 132px; }
   .tools { position: absolute; top: 10px; right: 16px; display: flex; gap: 6px; }
   .tools button { padding: 4px 10px; }
   #usage-toggle[aria-pressed="true"] { background: var(--user); }
@@ -111,6 +111,8 @@
   <div class="tools">
     <button type="button" class="secondary icon" id="usage-toggle" title="Context and usage limits"
             aria-label="Show context and usage limits" aria-pressed="false">{{icon:gauge}}</button>
+    <button type="button" class="secondary icon" id="save-as" aria-label="Save as"
+            title="Save as: save the drawing under a new name; the chat and its Inkscape window follow it">{{icon:save}}</button>
     <button type="button" class="secondary icon" id="new" title="New chat: Claude forgets this drawing's conversation"
             aria-label="New chat">{{icon:square-pen}}</button>
   </div>
@@ -138,7 +140,7 @@
   const log = document.getElementById("log");
   const input = document.getElementById("input");
   const hint = document.getElementById("hint");
-  const buttons = ["send", "undo", "image", "new"].map((id) => document.getElementById(id));
+  const buttons = ["send", "undo", "image", "new", "save-as"].map((id) => document.getElementById(id));
   const attached = document.getElementById("attached");
   const MAX_BYTES = 5 * 1024 * 1024;
   let pending = [];
@@ -393,6 +395,14 @@
   });
 
   setInterval(() => showUsage(lastUsage), 30000);
+
+  document.getElementById("save-as").addEventListener("click", () => {
+    const current = document.getElementById("doc").textContent;
+    const path = prompt("Save the drawing as (full path to an .svg file):", current);
+    if (!path || path === current) return;
+    run("/api/save-as", { path }, "Saving…").then(() =>
+      api("/api/state").then((state) => { document.getElementById("doc").textContent = state.document; }));
+  });
 
   document.getElementById("new").addEventListener("click", async () => {
     if (log.querySelector(".msg") && !confirm("Start a new chat? Claude forgets this conversation and its images.")) {

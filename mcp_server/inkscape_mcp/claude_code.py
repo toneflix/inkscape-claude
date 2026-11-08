@@ -109,10 +109,16 @@ class ClaudeCodeAgent:
                            "parent_tool_use_id": None, "session_id": ""}) + "\n"
 
     def state(self) -> dict:
-        return {"session_id": self.session_id}
+        return {"session_id": self.session_id, "workdir": str(self.workdir)}
 
     def restore(self, state: dict) -> None:
+        """Takes back the session, and the folder it was started in, since Claude Code finds sessions by folder."""
         self.session_id = state.get("session_id") or None
+        if state.get("workdir") and Path(state["workdir"]).is_dir():
+            self.workdir = Path(state["workdir"])
+
+    def move_to(self, path: Path) -> None:
+        self.path = path
 
     def run(self, prompt: str, context: list[dict] | None = None) -> TurnResult:
         """Runs one turn. A saved session Claude Code no longer has is dropped, and the turn starts a new one."""
