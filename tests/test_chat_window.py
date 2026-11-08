@@ -47,6 +47,15 @@ def wait_until_idle(chat: ChatWindow, timeout: float = 60) -> None:
         Gtk.main_iteration_do(False)
 
 
+@pytest.fixture(autouse=True)
+def own_config(tmp_path, monkeypatch):
+    """Keeps the window's saved choices out of the real config file."""
+    config = tmp_path / "own-config" / "config.json"
+    monkeypatch.setattr(Config, "path", staticmethod(lambda: config))
+
+    return config
+
+
 @pytest.fixture
 def chat(tmp_path):
     path = tmp_path / "drawing.svg"
@@ -191,7 +200,13 @@ def test_attached_images_and_usage_show_in_the_window(chat, tmp_path):
     labels = [child.get_text() for child in window.usage.box.get_children() if isinstance(child, Gtk.Label)]
     bars = [child for child in window.usage.box.get_children() if isinstance(child, Gtk.LevelBar)]
 
+    assert not window.usage.box.get_visible(), "hidden until the toggle is on"
+    assert window.usage.button.get_tooltip_text() == "Context: 42K of 1M (4%)\n5-hour limit: 95% used"
+
+    window.usage.button.set_active(True)
+
     assert window.usage.box.get_visible()
+    assert Config.load()["show_usage"] is True
     assert sorted(labels) == ["5-hour limit: 95% used", "Context: 42K of 1M (4%)"]
     assert sorted(round(bar.get_value(), 3) for bar in bars) == [0.042, 0.95]
 

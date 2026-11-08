@@ -72,9 +72,9 @@ BACKEND_LABELS = {"api": "API key", "claude-code": "Claude Code (your subscripti
 
 
 def icon_button(icon: str, label: str | None = None, tooltip: str | None = None, flat: bool = False,
-                classes: tuple[str, ...] = ()):
-    """A button with a Lucide icon, drawn in the button's text colour, and an optional label."""
-    button = Gtk.Button(label=label, tooltip_text=tooltip)
+                classes: tuple[str, ...] = (), toggle: bool = False):
+    """A button (or toggle button) with a Lucide icon, drawn in the button's text colour, and an optional label."""
+    button = (Gtk.ToggleButton if toggle else Gtk.Button)(label=label, tooltip_text=tooltip)
     for name in classes:
         button.get_style_context().add_class(name)
     if flat:
@@ -166,11 +166,38 @@ class SettingsDialog:
 
 
 class UsagePanel:
-    """Context used of the model's window and each usage limit, with a bar and when it resets."""
+    """Context used of the model's window and each usage limit, with a bar and when it resets. Hidden behind a
+    toggle button in the header, whose tooltip sums it up; the choice to show it is saved."""
 
     def __init__(self):
         self.box = Gtk.Grid(row_spacing=2, column_spacing=10, no_show_all=True)
         self.usage: dict | None = None
+        self.button = icon_button("gauge", tooltip="Context and usage limits", flat=True, toggle=True)
+        self.button.set_active(self.saved_choice())
+        self.button.connect("toggled", lambda *_: self.toggled())
+
+    @staticmethod
+    def saved_choice() -> bool:
+        try:
+            return Config.load().get("show_usage") is True
+        except ClaudeError:
+            return False
+
+    @property
+    def shown(self) -> bool:
+        return self.button.get_active()
+
+    def toggled(self) -> None:
+        self.box.set_visible(self.shown and self.usage is not None)
+        try:
+            Config.save(show_usage=self.shown)
+        except (OSError, ClaudeError):
+            pass
+
+    def lines(self) -> list[tuple[str, float | None]]:
+        rows = [(self.usage["context_text"], self.usage.get("context_share"))]
+
+        return rows + [(Limit(**limit).describe(), limit["used"]) for limit in self.usage.get("limits", [])]
 
     def update(self, usage: dict | None) -> bool:
         if usage and (usage.get("context_tokens") or usage.get("limits")):
@@ -184,6 +211,7 @@ class UsagePanel:
         for child in self.box.get_children():
             child.destroy()
         self.box.hide()
+        self.button.set_tooltip_text("Context and usage limits")
 
     def refresh(self) -> bool:
         if self.usage:
@@ -195,8 +223,8 @@ class UsagePanel:
         for child in self.box.get_children():
             child.destroy()
 
-        rows = [(self.usage["context_text"], self.usage.get("context_share"))]
-        rows += [(Limit(**limit).describe(), limit["used"]) for limit in self.usage.get("limits", [])]
+        rows = self.lines()
+        self.button.set_tooltip_text("\n".join(text for text, _ in rows))
         for row, (text, share) in enumerate(rows):
             label = Gtk.Label(label=text, xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END,
                               tooltip_text=text)
@@ -206,7 +234,7 @@ class UsagePanel:
                 self.box.attach(self.bar(share), 1, row, 1, 1)
         for child in self.box.get_children():
             child.show_all()
-        self.box.show()
+        self.box.set_visible(self.shown)
 
     @staticmethod
     def bar(share: float):
@@ -332,9 +360,10 @@ class ChatWindow:
         self.new_button.connect("clicked", lambda *_: self.new_chat())
         header = Gtk.Box(spacing=6)
         header.pack_start(self.badge, True, True, 0)
+        self.usage = UsagePanel()
         header.pack_end(settings_button, False, False, 0)
         header.pack_end(self.new_button, False, False, 0)
-        self.usage = UsagePanel()
+        header.pack_end(self.usage.button, False, False, 0)
 
         self.messages = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
         self.scroller = Gtk.ScrolledWindow(vexpand=True)

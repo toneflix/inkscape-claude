@@ -253,9 +253,9 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
 - **Image…** attaches PNG, JPEG, GIF or WebP images to your message; you can also paste or drop them. Claude
   sees them as context (a sketch, a style, a photo of what you want) and only puts one in the drawing, embedded,
   when you ask ("place this logo top left"). Images over 5 MB are shrunk first in the chat window.
-- Above the conversation the chat shows how much of the model's context the conversation uses (for example
+- The gauge button at the top shows how much of the model's context the conversation uses (for example
   "Context: 42K of 1M"), and the usage limits with when they reset. Through Claude Code these are your plan's
-  limits, such as the 5-hour and weekly ones. With an API key it is the tightest per-minute rate limit.
+  limits, such as the 5-hour and weekly ones. With an API key it is the tightest per-minute rate limit. Hover the button for a summary; it remembers whether you left it open.
 - When a message fails (for example Claude is overloaded or the connection drops), **Retry** under the error
   sends it again with its images. Changes Claude made before it failed stay.
 - Each drawing keeps its chat: reopen the chat for the same file and the conversation is there, and Claude

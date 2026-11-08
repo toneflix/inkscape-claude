@@ -50,7 +50,11 @@
   header { position: relative; }
   header h1 { margin: 0; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
   .logo { width: 22px; height: 22px; }
-  #new { position: absolute; top: 10px; right: 16px; padding: 4px 10px; font-size: 12px; }
+  header h1, #doc { padding-right: 96px; }
+  .tools { position: absolute; top: 10px; right: 16px; display: flex; gap: 6px; }
+  .tools button { padding: 4px 10px; }
+  #usage-toggle[aria-pressed="true"] { background: var(--user); }
+  .usage.collapsed { display: none; }
   #doc { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   .badge { display: inline-block; margin-top: 4px; font-size: 12px; color: var(--muted); }
   .badge::before { content: "●"; margin-right: 4px; color: var(--muted); }
@@ -104,9 +108,13 @@
   <h1><img class="logo" src="data:image/svg+xml;base64,{{LOGO}}" alt="">Claude for Inkscape</h1>
   <div id="doc"></div>
   <div id="live" class="badge"></div>
-  <button type="button" class="secondary icon" id="new" title="New chat: Claude forgets this drawing's conversation"
-          aria-label="New chat">{{icon:square-pen}}</button>
-  <div id="usage" class="usage"></div>
+  <div class="tools">
+    <button type="button" class="secondary icon" id="usage-toggle" title="Context and usage limits"
+            aria-label="Show context and usage limits" aria-pressed="false">{{icon:gauge}}</button>
+    <button type="button" class="secondary icon" id="new" title="New chat: Claude forgets this drawing's conversation"
+            aria-label="New chat">{{icon:square-pen}}</button>
+  </div>
+  <div id="usage" class="usage collapsed"></div>
 </header>
 <main id="log">
   <p class="empty" id="empty">Ask for a change, for example "add a soft drop shadow to the logo" or
@@ -248,7 +256,23 @@
       }
       box.append(label, bar);
     }
+    document.getElementById("usage-toggle").title = rows.map(([text]) => text).join("\n");
   }
+
+  function showUsagePanel(shown) {
+    const toggle = document.getElementById("usage-toggle");
+    toggle.setAttribute("aria-pressed", String(shown));
+    document.getElementById("usage").classList.toggle("collapsed", !shown);
+    try { localStorage.setItem("show-usage", shown ? "1" : "0"); } catch (error) {}
+  }
+
+  let usageShown = false;
+  try { usageShown = localStorage.getItem("show-usage") === "1"; } catch (error) {}
+  showUsagePanel(usageShown);
+  document.getElementById("usage-toggle").addEventListener("click", () => {
+    usageShown = !usageShown;
+    showUsagePanel(usageShown);
+  });
 
   function attach(files) {
     for (const file of files) {
