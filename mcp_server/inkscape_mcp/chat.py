@@ -85,6 +85,13 @@ class ChatSession:
         live = None if args.no_live else live_control(inkscape)
         window = args.window
         notice = None
+        if args.draft and live is None:
+            notice = (f"Your drawing had not been saved, so the chat saved it as {document}. Open that file in "
+                      "Inkscape to see Claude's changes.")
+        elif args.draft:
+            notice = (f"Your drawing had not been saved, so the chat saved it as {document} and opened it in a new "
+                      "Inkscape window that it keeps in sync. Work in that window and close the untitled one; use "
+                      "File > Save As to keep it somewhere else.")
         if live is not None and (isinstance(live, ShellInkscape) or not args.attach) and window is None:
             try:
                 window = live.open(document)
@@ -497,6 +504,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--attach", action="store_true",
                         help="the document is already open in Inkscape; sync with the newest window (needs D-Bus; "
                              "without it the chat opens its own window)")
+    parser.add_argument("--draft", action="store_true",
+                        help="the document is a copy of a drawing that was never saved; open it in its own window")
     parser.add_argument("--window", type=int, help="Inkscape window number to sync with")
     parser.add_argument("--idle-minutes", type=float, help="browser page: stop after this many minutes without use")
 

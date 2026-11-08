@@ -230,8 +230,9 @@ page after each answer, and remembers what you asked before ("now make those sta
 
 ![The chat window next to Inkscape after Claude added stars to a badge](examples/chat-window.png)
 
-Start it from Inkscape with **Extensions > Claude > Open Claude Chat** (save the drawing first; there is no
-dialog, the chat opens straight away), or from a terminal:
+Start it from Inkscape with **Extensions > Claude > Open Claude Chat** (there is no dialog, the chat opens
+straight away; a drawing that was never saved is saved as `~/InkscapeClaude/Untitled <date>.svg` and opened in a
+window the chat keeps in sync), or from a terminal:
 
 ```bash
 inkscape-claude-chat drawing.svg               # opens the file in Inkscape and the chat window
