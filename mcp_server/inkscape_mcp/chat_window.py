@@ -333,9 +333,11 @@ class ChatWindow:
         self.window.add(layout)
 
         self.was_live = session.live_enabled
+        self.retry_buttons: list = []
         self.add_message("system", "Ask for a change to the drawing. Enter sends, Shift+Enter adds a line.")
         for entry in session.transcript:
-            self.add_message(entry["role"], entry["text"], entry.get("steps"))
+            self.add_message(entry["role"], entry["text"], entry.get("steps"),
+                             retry=entry.get("retry") and entry is session.transcript[-1])
         if session.backend == "claude-code":
             self.add_message("system", self.describe_settings())
         self.refresh_badge()
@@ -456,18 +458,26 @@ class ChatWindow:
         buffer.set_text("")
         images = self.pending.take()
         self.add_message("user", text or "Here is an image.", images=[image.path for image in images])
+        self.reply("Claude is working…", lambda on_event: self.session.send(text, on_event, images))
+
+    def retry(self) -> None:
+        self.reply("Trying again…", self.session.retry)
+
+    def reply(self, status: str, task: Callable) -> None:
+        """Runs a turn with its answer showing as it is written, and a Retry button if it fails."""
         live = LiveReply(self)
 
         def on_event(kind: str, payload) -> None:
             target = self.usage.update if kind == "usage" else lambda payload: live.update(kind, payload)
             GLib.idle_add(target, payload, priority=GLib.PRIORITY_DEFAULT)
 
-        self.work("Claude is working…", lambda: self.session.send(text, on_event, images), live)
+        self.work(status, lambda: task(on_event), live, retryable=True)
 
     def undo(self) -> None:
         self.work("Undoing…", self.session.undo)
 
-    def work(self, status: str, task: Callable[[], dict], live: LiveReply | None = None) -> None:
+    def work(self, status: str, task: Callable[[], dict], live: LiveReply | None = None,
+             retryable: bool = False) -> None:
         """Runs a chat call off the GTK thread and shows its result, in place of `live`, when it is done."""
         self.set_busy(True, status)
 
@@ -475,7 +485,7 @@ class ChatWindow:
             try:
                 result = task()
             except EXPECTED_ERRORS as exc:
-                result = {"role": "system", "text": f"Error: {exc}"}
+                result = {"role": "system", "text": f"Error: {exc}", "retry": retryable and self.session.can_retry}
             GLib.idle_add(self.finish, result, live, priority=GLib.PRIORITY_DEFAULT)
 
         threading.Thread(target=background, daemon=True).start()
@@ -485,7 +495,7 @@ class ChatWindow:
         if live:
             live.remove()
         self.add_message(result.get("role", "system"), result.get("text", ""), result.get("steps"),
-                         result.get("preview"), result.get("selection"))
+                         result.get("preview"), result.get("selection"), retry=result.get("retry"))
         self.usage.update(result.get("usage"))
         self.refresh_badge()
 
@@ -497,12 +507,17 @@ class ChatWindow:
         self.undo_button.set_sensitive(not busy)
         self.image_button.set_sensitive(not busy)
         if busy:
+            for button in self.retry_buttons:
+                button.destroy()
+            self.retry_buttons.clear()
+        if busy:
             self.spinner.start()
         else:
             self.spinner.stop()
 
     def add_message(self, role: str, text: str, steps: list[dict] | None = None, preview: str | None = None,
-                    selection: list[str] | None = None, images: list[Path] | None = None) -> None:
+                    selection: list[str] | None = None, images: list[Path] | None = None,
+                    retry: bool = False) -> None:
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         bubble.get_style_context().add_class("bubble")
         bubble.get_style_context().add_class(role)
@@ -536,6 +551,13 @@ class ChatWindow:
 
         if preview:
             bubble.pack_start(Gtk.Image.new_from_pixbuf(self.pixbuf(preview)), False, False, 0)
+
+        if retry:
+            button = Gtk.Button(label="Retry", halign=Gtk.Align.START,
+                                tooltip_text="Send the message again. Changes Claude already made stay.")
+            button.connect("clicked", lambda *_: self.retry())
+            self.retry_buttons.append(button)
+            bubble.pack_start(button, False, False, 0)
 
         row = Gtk.Box()
         if role == "user":

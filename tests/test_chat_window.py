@@ -190,3 +190,30 @@ def test_attached_images_and_usage_show_in_the_window(chat, tmp_path):
     assert window.usage.box.get_visible()
     assert sorted(labels) == ["5-hour limit: 95% used", "Context: 42K of 1M (4%)"]
     assert sorted(round(bar.get_value(), 3) for bar in bars) == [0.042, 0.95]
+
+
+def test_a_failed_message_shows_retry(tmp_path):
+    from gi.repository import Gtk
+    from test_chat import FailsOnce
+
+    path = tmp_path / "drawing.svg"
+    SvgDocument.blank(200, 100).save(path)
+    window = ChatWindow(ChatSession(path, FailsOnce([done("Added it.")]), Inkscape(), live=None))
+    window.window.show_all()
+
+    try:
+        window.prompt.get_buffer().set_text("Add a star")
+        window.send()
+        wait_until_idle(window)
+
+        assert texts(window)[-2] == "Error: Claude API error 529: Overloaded"
+        [button] = window.retry_buttons
+        assert isinstance(button, Gtk.Button) and button.get_label() == "Retry"
+
+        button.clicked()
+        wait_until_idle(window)
+
+        assert texts(window)[-1] == "Added it." and not window.retry_buttons
+        assert texts(window).count("Add a star") == 1
+    finally:
+        window.window.destroy()

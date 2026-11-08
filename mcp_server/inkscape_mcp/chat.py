@@ -60,6 +60,7 @@ class ChatSession:
         self.transcript: list[dict] = []
         self.notes: list[str] = []
         self.focus: list[str] = []
+        self.failed: tuple[str, list[Attachment]] | None = None
         self.lock = threading.Lock()
 
     @classmethod
@@ -148,8 +149,21 @@ class ChatSession:
         return {"document": str(self.path), "live": self.live_enabled, "transcript": self.transcript,
                 "usage": self.usage.to_dict()}
 
+    @property
+    def can_retry(self) -> bool:
+        return self.failed is not None
+
+    def retry(self, on_event: Callable[[str, object], None] | None = None) -> dict:
+        """Sends the message that last failed again, with its images. Edits made before it failed stay."""
+        if self.failed is None:
+            raise ValueError("There is no failed message to retry.")
+
+        text, images = self.failed
+
+        return self.send(text, on_event, images, retrying=True)
+
     def send(self, text: str, on_event: Callable[[str, object], None] | None = None,
-             images: list[Attachment] | None = None) -> dict:
+             images: list[Attachment] | None = None, retrying: bool = False) -> dict:
         """Runs one turn, with any attached images (from self.attachments) shown to Claude. on_event gets
         ("text", piece of the reply) as Claude writes, ("step", step dict) after each tool call and ("usage",
         usage dict) after each response; the Inkscape window reloads after drawing changes, at most every
@@ -168,7 +182,8 @@ class ChatSession:
         with self.lock:
             selection = self.sync_from_inkscape()
             names = [image.name for image in images]
-            self.transcript.append({"role": "user", "text": text, "images": names})
+            if not retrying:
+                self.transcript.append({"role": "user", "text": text, "images": names})
 
             prompt = "\n".join([*self.notes, self.selection_note(selection), self.images_note(names), text]).strip()
             self.notes.clear()
@@ -176,12 +191,14 @@ class ChatSession:
             try:
                 result = self.agent.run(prompt, [image.block() for image in images])
             except EXPECTED_ERRORS as exc:
-                self.transcript.append({"role": "system", "text": f"Error: {exc}"})
+                self.failed = (text, images)
+                self.transcript.append({"role": "system", "text": f"Error: {exc}", "retry": True})
                 raise
             finally:
                 self.listen(None)
                 self.sync_to_inkscape()
 
+            self.failed = None
             entry = {"role": "assistant", "text": result.reply, "steps": [asdict(step) for step in result.steps],
                      "selection": selection}
             self.transcript.append(entry)
@@ -333,6 +350,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             return self.reply(HTTPStatus.FORBIDDEN, {"error": "Missing or wrong chat token."})
 
         routes = {"/api/message": self.send_message,
+                  "/api/retry": self.retry_message,
                   "/api/undo": lambda body: self.session.undo()}
         route = routes.get(urlparse(self.path).path)
         if route is None:
@@ -343,7 +361,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}")
             self.reply(HTTPStatus.OK, route(body))
         except EXPECTED_ERRORS as exc:
-            self.reply(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            self.reply(HTTPStatus.BAD_REQUEST, {"error": str(exc), "retry": self.session.can_retry})
 
     def send_message(self, body: dict) -> dict:
         images = [self.session.attachments.add_data(str(image.get("name") or "image"),
@@ -352,6 +370,11 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.server.progress.reset()
 
         return self.session.send(str(body.get("text", "")), self.server.progress.update, images)
+
+    def retry_message(self, _body: dict) -> dict:
+        self.server.progress.reset()
+
+        return self.session.retry(self.server.progress.update)
 
     def authorized(self) -> bool:
         return secrets.compare_digest(self.headers.get("x-chat-token", ""), self.token)

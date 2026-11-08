@@ -254,6 +254,8 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
 - Above the conversation the chat shows how much of the model's context the conversation uses (for example
   "Context: 42K of 1M"), and the usage limits with when they reset. Through Claude Code these are your plan's
   limits, such as the 5-hour and weekly ones. With an API key it is the tightest per-minute rate limit.
+- When a message fails (for example Claude is overloaded or the connection drops), **Retry** under the error
+  sends it again with its images. Changes Claude made before it failed stay.
 - **Undo** reverts Claude's last edit, and Claude is told about it. **Enter** sends, **Shift+Enter** adds a line.
 - If the chat cannot start, Inkscape shows why. Its output goes to `chat.log` next to the config file
   (`~/.config/inkscape-claude/chat.log`, Windows: `%APPDATA%\inkscape-claude\chat.log`).
