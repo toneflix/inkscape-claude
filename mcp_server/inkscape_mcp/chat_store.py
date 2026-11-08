@@ -47,6 +47,21 @@ class ChatStore:
     def clear(self) -> None:
         shutil.rmtree(self.folder, ignore_errors=True)
 
+    def move_to(self, document: Path) -> ChatStore:
+        """Copies this chat to the store for `document`, leaving the old folder empty but in place, since a Claude
+        Code session stays tied to the folder it started in."""
+        target = ChatStore(document, self.folder.parent)
+        if target.folder == self.folder:
+            return self
+
+        shutil.rmtree(target.folder, ignore_errors=True)
+        if self.folder.is_dir():
+            shutil.copytree(self.folder, target.folder)
+            self.file.unlink(missing_ok=True)
+            shutil.rmtree(self.attachments, ignore_errors=True)
+
+        return target
+
     @classmethod
     def without_images(cls, messages: list[dict]) -> list[dict]:
         """API messages with image data swapped for a note, so the saved chat stays small."""

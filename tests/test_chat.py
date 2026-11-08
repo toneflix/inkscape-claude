@@ -227,3 +227,167 @@ def test_a_failed_message_can_be_retried(tmp_path):
     assert [entry["role"] for entry in session.transcript] == ["user", "system", "assistant"], \
         "the message is not repeated in the conversation"
     assert session.agent.messages[-2]["content"][-1]["text"] == "Add a star"
+
+
+class WindowLive(MarkingLive):
+    """A live window that can be swapped: records the files opened and the windows closed."""
+
+    def __init__(self, path, can_close=True):
+        super().__init__(path, [])
+        self.opened, self.closed, self.can_close = [], [], can_close
+
+    def open(self, path):
+        self.opened.append(path)
+        self.path = path
+        return len(self.opened) + 1
+
+    def close_window(self, window):
+        from inkscape_mcp.live import LiveError
+
+        if not self.can_close:
+            raise LiveError("cannot close")
+        self.closed.append(window)
+
+
+def test_save_as_moves_the_drawing_the_chat_and_the_window(tmp_path):
+    from inkscape_mcp.chat_store import ChatStore
+
+    draft = tmp_path / "Untitled.svg"
+    SvgDocument.blank(200, 100).save(draft)
+    store = ChatStore(draft, tmp_path / "chats")
+    live = WindowLive(draft)
+    session = ChatSession(draft, ScriptedClient([tool_call("a", "add_elements", svg_fragment='<rect id="box"/>'),
+                                                 done("Added."), done("Still here.")]),
+                          Inkscape(), live, window=1, store=store)
+    session.send("Add a box")
+
+    result = session.save_as(tmp_path / "work" / "poster")
+
+    target = tmp_path / "work" / "poster.svg"
+    assert result["text"].startswith(f"Saved as {target}.") and "in place of the old one" in result["text"]
+    assert SvgDocument.load(target).has("box") and session.path == target
+    assert live.opened == [target] and live.closed == [1] and session.window == 2
+    assert not store.file.exists() and store.folder.is_dir(), "the old folder stays for Claude Code's session"
+
+    session.send("Are you there?")
+
+    assert session.agent.tools.path == target
+    restored = ChatSession(target, ScriptedClient([]), Inkscape(), None, store=ChatStore(target, tmp_path / "chats"))
+    assert [entry["text"] for entry in restored.transcript][:2] == ["Add a box", "Added."]
+    assert ChatSession(draft, ScriptedClient([]), Inkscape(), None, store=store).transcript == []
+
+    with pytest.raises(ValueError, match="already works on"):
+        session.save_as(target)
+
+
+def test_save_as_says_to_close_the_old_window_where_inkscape_cannot(tmp_path):
+    path = tmp_path / "drawing.svg"
+    SvgDocument.blank(200, 100).save(path)
+    session = ChatSession(path, ScriptedClient([]), Inkscape(), WindowLive(path, can_close=False))
+
+    assert session.save_as(tmp_path / "copy.svg")["text"].endswith("close the old one.")
+
+
+def inkscape_used(xbel, *files, when=None):
+    """Writes a recently-used.xbel listing `files` as used by Inkscape at `when` (epoch seconds)."""
+    import time
+
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime(when or time.time() + 1))
+    bookmarks = "".join(
+        f'<bookmark href="{Path(file).as_uri()}" added="{stamp}" modified="{stamp}" visited="{stamp}"><info>'
+        '<metadata owner="http://freedesktop.org"><bookmark:applications>'
+        f'<bookmark:application name="org.inkscape.Inkscape" exec="inkscape %u" modified="{stamp}" count="1"/>'
+        '</bookmark:applications></metadata></info></bookmark>' for file in files)
+    xbel.parent.mkdir(parents=True, exist_ok=True)
+    xbel.write_text('<?xml version="1.0" encoding="UTF-8"?><xbel version="1.0" '
+                    'xmlns:bookmark="http://www.freedesktop.org/standards/desktop-bookmarks">'
+                    f'{bookmarks}</xbel>')
+
+
+class SavingLive(WindowLive):
+    """A window whose save is File > Save into the file it has open, recording where it was moved."""
+
+    def __init__(self, path, in_place=False):
+        super().__init__(path)
+        self.in_place, self.moves = in_place, []
+
+    def saves_in_place(self):
+        return self.in_place
+
+    def moved(self, window, path):
+        self.moves.append(path)
+
+
+def drawing(path, *ids):
+    doc = SvgDocument.blank(200, 100)
+    doc.add("".join(f'<rect id="{element_id}" width="5" height="5"/>' for element_id in ids))
+    doc.save(path)
+
+
+def test_the_chat_follows_inkscapes_own_save_as(tmp_path):
+    from inkscape_mcp.chat_store import ChatStore
+    from inkscape_mcp.recent import RecentFiles
+
+    first, saved, other = tmp_path / "first.svg", tmp_path / "saved" / "poster.svg", tmp_path / "other.svg"
+    saved.parent.mkdir()
+    drawing(first, "a", "b", "c")
+    drawing(saved, "a", "b", "c", "d")
+    drawing(other, "x", "y")
+    store = ChatStore(first, tmp_path / "chats")
+    live = SavingLive(first)
+    session = ChatSession(first, ScriptedClient([done("Hi."), done("Hello again.")]), Inkscape(), live, window=1,
+                          store=store)
+    session.recent = RecentFiles([tmp_path / "recent.xbel"])
+    inkscape_used(tmp_path / "recent.xbel", saved, when=session.checked_at - 60)
+
+    session.send("Hello")
+
+    assert session.path == first, "a save from before the chat opened is not followed"
+
+    inkscape_used(tmp_path / "recent.xbel", first, other, saved)
+    result = session.send("Still there?")
+
+    assert session.path == saved and live.moves == [saved]
+    assert result["notice"].startswith(f"Inkscape saved this drawing as {saved}, so the chat works on that file")
+    assert [entry["role"] for entry in session.transcript][-3:] == ["user", "system", "assistant"]
+    assert "(The drawing is now saved as poster.svg.)" in session.client.calls[1][-1]["content"][0]["text"]
+    assert session.agent.tools.path == saved and not store.file.exists()
+    assert ChatSession(saved, ScriptedClient([]), Inkscape(), None,
+                       store=ChatStore(saved, tmp_path / "chats")).transcript[0]["text"] == "Hello"
+    assert session.follow_save_as() is None, "the file it left is not followed back"
+
+
+def test_a_saved_copy_is_not_followed_where_inkscape_saves_in_place(tmp_path):
+    from inkscape_mcp.recent import RecentFiles
+
+    path, copy = tmp_path / "drawing.svg", tmp_path / "copy.svg"
+    drawing(path, "a", "b")
+    drawing(copy, "a", "b")
+    live = SavingLive(path, in_place=True)
+    session = ChatSession(path, ScriptedClient([done("Hi.")]), Inkscape(), live, window=1)
+    session.recent = RecentFiles([tmp_path / "recent.xbel"])
+    inkscape_used(tmp_path / "recent.xbel", copy)
+
+    assert session.send("Hello")["notice"] is None
+    assert session.path == path
+
+    live.path = copy
+    session.checked_at -= 10
+
+    assert session.follow_save_as() is None, "the copy is set aside once it is found to be one"
+    assert RecentFiles.same_drawing(path, copy) and not RecentFiles.same_drawing(path, tmp_path / "nope.svg")
+
+
+def test_save_as_in_inkscape_is_followed_where_inkscape_saves_in_place(tmp_path):
+    from inkscape_mcp.recent import RecentFiles
+
+    path, saved = tmp_path / "drawing.svg", tmp_path / "saved.svg"
+    drawing(path, "a", "b")
+    drawing(saved, "a", "b")
+    live = SavingLive(saved, in_place=True)
+    session = ChatSession(path, ScriptedClient([]), Inkscape(), live, window=1)
+    session.recent = RecentFiles([tmp_path / "recent.xbel"])
+    inkscape_used(tmp_path / "recent.xbel", saved)
+
+    assert session.follow_save_as().startswith(f"Inkscape saved this drawing as {saved}")
+    assert session.path == saved

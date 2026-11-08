@@ -155,6 +155,13 @@ class LiveInkscape:
 
         self.export(path, "svg")
 
+    def saves_in_place(self) -> bool:
+        """Whether save() is File > Save, which writes to the file the window has open, wherever that is."""
+        return bool(self.windows())
+
+    def moved(self, window: int | None, path: Path) -> None:
+        """Nothing to do: Inkscape itself knows which file a window has open."""
+
     def reload(self, window: int | None = None) -> None:
         """File > Revert, or reloading the file into the same document where window actions are missing."""
         if self.windows():
@@ -162,6 +169,13 @@ class LiveInkscape:
             return
 
         self.run(["select-clear", "file-rebase:true"])
+
+    def close_window(self, window: int | None) -> None:
+        """Closes a window's document. Only possible where Inkscape publishes window actions (Linux)."""
+        if not window or window not in self.windows():
+            raise LiveError("This Inkscape cannot close a window over D-Bus.")
+
+        self.activate("document-close", target="window", number=window)
 
     def open(self, path: Path) -> int | None:
         """Open a file in the running Inkscape, or start Inkscape with it. Returns the new window number."""

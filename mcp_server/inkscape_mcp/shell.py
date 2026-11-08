@@ -149,6 +149,11 @@ class ShellInkscape:
 
         return number
 
+    def close_window(self, number: int | None) -> None:
+        window = self._windows.pop(number, None)
+        if window is not None:
+            window.close()
+
     def run(self, actions: list[str], window: int | None = None) -> list[str]:
         steps = Inkscape.normalize_actions(actions)
         self._window(window).run(steps)
@@ -175,6 +180,13 @@ class ShellInkscape:
     def save(self, window: int | None = None, path: Path | None = None) -> None:
         target = self._window(window)
         self.export(target.path, "svg", window=window)
+
+    def saves_in_place(self) -> bool:
+        return False
+
+    def moved(self, window: int | None, path: Path) -> None:
+        """Saves the window to `path` from now on, after it was saved there under a new name."""
+        self._window(window).path = path
 
     def reload(self, window: int | None = None) -> None:
         if not self._rebase_supported():

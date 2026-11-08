@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .claude import Config
@@ -23,11 +24,25 @@ class ChatLauncher:
     startup_seconds = 4
     log_lines = 15
 
-    def __init__(self, document: Path, python_paths: list[str], cwd: Path, python: str | None = None):
+    def __init__(self, document: Path, python_paths: list[str], cwd: Path, python: str | None = None,
+                 draft: bool = False):
         self.document = document
         self.python_paths = python_paths
         self.cwd = cwd
         self.python = python or self.windowless_python(sys.executable)
+        self.draft = draft
+
+    @staticmethod
+    def draft_path(folder: Path | None = None) -> Path:
+        """Where a drawing that was never saved is kept for the chat: ~/InkscapeClaude/Untitled <time>.svg."""
+        folder = folder or Path.home() / "InkscapeClaude"
+        path = folder / time.strftime("Untitled %Y-%m-%d %H%M%S.svg")
+        number = 2
+        while path.exists():
+            path = path.with_name(f"{path.stem.split(' (')[0]} ({number}).svg")
+            number += 1
+
+        return path
 
     @property
     def log_path(self) -> Path:
@@ -35,7 +50,9 @@ class ChatLauncher:
 
     @property
     def command(self) -> list[str]:
-        return [self.python, "-m", "inkscape_mcp.chat", str(self.document), "--attach", "--idle-minutes", "120"]
+        mode = "--draft" if self.draft else "--attach"
+
+        return [self.python, "-m", "inkscape_mcp.chat", str(self.document), mode, "--idle-minutes", "120"]
 
     @property
     def env(self) -> dict[str, str]:

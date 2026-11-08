@@ -10,6 +10,7 @@ import base64
 import json
 import re
 import secrets
+import shutil
 import sys
 import tempfile
 import threading
@@ -31,6 +32,7 @@ from .cli import Inkscape, InkscapeError
 from .icons import svg
 from .live import LiveError, LiveInkscape
 from .operations import DocumentOperations
+from .recent import RecentFiles
 from .shell import ShellInkscape, live_control
 from .svgdoc import SvgDocument, SvgError
 from .usage import Usage
@@ -66,6 +68,9 @@ class ChatSession:
         self.notes: list[str] = []
         self.focus: list[str] = []
         self.failed: tuple[str, list[Attachment]] | None = None
+        self.recent = RecentFiles()
+        self.checked_at = time.time()
+        self.earlier_paths: set[Path] = set()
         self.lock = threading.Lock()
         self.restore()
 
@@ -85,6 +90,14 @@ class ChatSession:
         live = None if args.no_live else live_control(inkscape)
         window = args.window
         notice = None
+        if args.draft and live is None:
+            notice = (f"Your drawing had not been saved, so the chat saved it as {document}. Open that file in "
+                      "Inkscape to see Claude's changes.")
+        elif args.draft:
+            notice = (f"Your drawing had not been saved, so the chat saved it as {document} and opened it in a new "
+                      "Inkscape window that it keeps in sync. Work in that window and close the untitled one. To keep it "
+                      "under another name, use the chat's Save as button: the chat follows the file. After File > "
+                      "Save As in Inkscape, the chat finds the new file when you send your next message.")
         if live is not None and (isinstance(live, ShellInkscape) or not args.attach) and window is None:
             try:
                 window = live.open(document)
@@ -143,6 +156,91 @@ class ChatSession:
             self.agent = self.make_agent(self.client, backend)
             self.save()
 
+    def save_as(self, target: Path) -> dict:
+        """Saves the drawing under a new name and carries on there: the chat history moves with it, and the
+        Inkscape window the chat follows is swapped for one showing the new file."""
+        target = Path(target).expanduser().resolve()
+        if target.suffix.lower() != ".svg":
+            target = target.with_name(target.name + ".svg")
+        if target == self.path:
+            raise ValueError("That is the file the chat already works on.")
+
+        with self.lock:
+            self.sync_from_inkscape()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self.path, target)
+
+            old_window = self.window
+            self.move_to(target)
+
+            text = f"Saved as {target}. The chat works on this file from now on."
+            if self.live is not None:
+                text += self.switch_window(target, old_window)
+            self.transcript.append({"role": "system", "text": text})
+            self.save()
+
+            return {"role": "system", "text": text}
+
+    def move_to(self, target: Path) -> None:
+        """Carries the chat, what Claude remembers and the attached images over to the drawing at `target`."""
+        self.earlier_paths.add(self.path)
+        self.path = target
+        self.agent.move_to(target)
+        if self.store:
+            self.store = self.store.move_to(target)
+            self.attachments.folder = self.store.attachments
+        self.notes.append(f"(The drawing is now saved as {target.name}.)")
+
+    def follow_save_as(self) -> str | None:
+        """Follows the drawing to a new name after File > Save As in Inkscape, which only shows in Inkscape's
+        recent files: a file it saved since the last check that holds the same objects. Returns the notice."""
+        since, self.checked_at = self.checked_at, time.time()
+        if not self.live_enabled:
+            return None
+
+        left_out = {self.path, *self.earlier_paths}
+        candidates = [path for path in self.recent.saved_by_inkscape(since) if path.resolve() not in left_out]
+        target = next((path.resolve() for path in candidates if self.recent.same_drawing(path, self.path)), None)
+        if target is None or self.saved_a_copy(target):
+            return None
+
+        self.move_to(target)
+        self.live.moved(self.window, target)
+        text = (f"Inkscape saved this drawing as {target}, so the chat works on that file now. If that is the "
+                "wrong file, use the chat's Save as button.")
+        self.transcript.append({"role": "system", "text": text})
+
+        return text
+
+    def saved_a_copy(self, target: Path) -> bool:
+        """Whether `target` came from File > Save a Copy, which Inkscape lists the same way as Save As. Where
+        saving is File > Save, the window's own file is the one a save changes."""
+        if not self.live.saves_in_place():
+            return False
+
+        before = [path.stat().st_mtime_ns for path in (self.path, target)]
+        self.live.save(self.window, self.path)
+        after = [path.stat().st_mtime_ns for path in (self.path, target)]
+        if after[0] != before[0] and after[1] == before[1]:
+            self.earlier_paths.add(target)
+            return True
+
+        return False
+
+    def switch_window(self, target: Path, old_window: int | None) -> str:
+        """Opens `target` in Inkscape for the chat to follow, and closes the old window where Inkscape allows."""
+        try:
+            self.window = self.live.open(target)
+        except LiveError as exc:
+            return f" Open it in Inkscape yourself to keep working on it ({exc})."
+
+        try:
+            self.live.close_window(old_window)
+        except LiveError:
+            return " It is open in a new Inkscape window; close the old one."
+
+        return " It is open in a new Inkscape window in place of the old one."
+
     def restore(self) -> None:
         """Brings back this drawing's saved chat. What Claude remembers only carries over on the same backend."""
         data = self.store.load() if self.store else {}
@@ -196,7 +294,8 @@ class ChatSession:
         return self.agent.usage
 
     def state(self) -> dict:
-        return {"document": str(self.path), "live": self.live_enabled, "transcript": self.transcript,
+        return {"document": str(self.path), "name": self.path.name, "live": self.live_enabled,
+                "transcript": self.transcript,
                 "usage": self.usage.to_dict(), "can_retry": self.can_retry, "can_undo": self.can_undo}
 
     @property
@@ -234,10 +333,11 @@ class ChatSession:
                               "Claude Code in Settings to use your subscription.")
 
         with self.lock:
+            if not retrying:
+                self.transcript.append({"role": "user", "text": text, "images": [image.name for image in images]})
+            notice = self.follow_save_as()
             selection = self.sync_from_inkscape()
             names = [image.name for image in images]
-            if not retrying:
-                self.transcript.append({"role": "user", "text": text, "images": names})
 
             prompt = "\n".join([*self.notes, self.selection_note(selection), self.images_note(names), text]).strip()
             self.notes.clear()
@@ -261,7 +361,7 @@ class ChatSession:
             self.focus = selection
             self.save()
 
-            return {**entry, "preview": self.preview(), "usage": self.usage.to_dict()}
+            return {**entry, "preview": self.preview(), "usage": self.usage.to_dict(), "notice": notice}
 
     def listen(self, on_event: Callable[[str, object], None] | None) -> None:
         """Connects the agent's text and step callbacks to on_event, or disconnects them."""
@@ -411,6 +511,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         routes = {"/api/message": self.send_message,
                   "/api/retry": self.retry_message,
                   "/api/clear": lambda body: self.session.clear(),
+                  "/api/save-as": lambda body: self.session.save_as(Path(str(body.get("path") or ""))),
                   "/api/undo": lambda body: self.session.undo()}
         route = routes.get(urlparse(self.path).path)
         if route is None:
@@ -497,6 +598,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--attach", action="store_true",
                         help="the document is already open in Inkscape; sync with the newest window (needs D-Bus; "
                              "without it the chat opens its own window)")
+    parser.add_argument("--draft", action="store_true",
+                        help="the document is a copy of a drawing that was never saved; open it in its own window")
     parser.add_argument("--window", type=int, help="Inkscape window number to sync with")
     parser.add_argument("--idle-minutes", type=float, help="browser page: stop after this many minutes without use")
 
