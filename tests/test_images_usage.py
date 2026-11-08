@@ -163,3 +163,38 @@ def test_browser_page_takes_images(tmp_path):
     assert result["text"] == "I see a grey square."
     assert session.attachments.names() == ["square.png"]
     assert session.agent.messages[0]["content"][0]["type"] == "image"
+
+
+def test_the_chat_is_kept_per_drawing(tmp_path):
+    from inkscape_mcp.chat_store import IMAGE_LEFT_OUT, ChatStore
+    from test_agent import ScriptedClient, done
+
+    path = tmp_path / "drawing.svg"
+    SvgDocument.blank(200, 100).save(path)
+    store = ChatStore(path, tmp_path / "chats")
+    first = ChatSession(path, ScriptedClient([{**done("A grey square."), "usage": {"input_tokens": 900}}]),
+                        Inkscape(), live=None, store=store)
+    source = tmp_path / "square.png"
+    source.write_bytes(png(8, 8))
+
+    first.send("What is this?", images=[first.attachments.add(source)])
+    second = ChatSession(path, ScriptedClient([done("Yes.")]), Inkscape(), live=None, store=store)
+
+    assert [entry["text"] for entry in second.transcript] == ["What is this?", "A grey square."]
+    assert second.transcript[0]["images"] == ["square.png"] and second.attachments.names() == ["square.png"]
+    assert second.agent.messages[0]["content"][0] == {"type": "text", "text": IMAGE_LEFT_OUT}
+    assert second.usage.context_tokens == 900
+
+    second.send("Still there?")
+
+    assert len(second.client.calls[0]) == 3, "Claude gets the earlier conversation"
+    other = ChatSession(tmp_path / "other.svg", ScriptedClient([]), Inkscape(), live=None,
+                        store=ChatStore(tmp_path / "other.svg", tmp_path / "chats"))
+    assert other.transcript == []
+
+    switched = ChatSession(path, ScriptedClient([]), Inkscape(), live=None, backend="claude-code", store=store)
+    assert switched.transcript[-1]["text"].startswith("These messages went through another connection")
+
+    assert second.clear()["text"] == "Started a new chat."
+    assert not store.folder.exists() and second.transcript == [] and second.agent.messages == []
+    assert ChatSession(path, ScriptedClient([]), Inkscape(), live=None, store=store).transcript == []

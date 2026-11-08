@@ -68,10 +68,14 @@ def test_send_shows_the_answer_and_a_preview(chat):
 
     window, path = chat
 
+    assert not window.undo_button.get_visible(), "nothing to undo yet"
+
     window.prompt.get_buffer().set_text("Add a box")
     window.send()
     wait_until_idle(window)
 
+    assert window.undo_button.get_visible()
+    assert window.send_button.get_image() is not None, "buttons carry their icons"
     shown = texts(window)
     images = [w for row in window.messages.get_children() for bubble in row.get_children()
               for w in bubble.get_children() if isinstance(w, Gtk.Image)]
@@ -215,5 +219,26 @@ def test_a_failed_message_shows_retry(tmp_path):
 
         assert texts(window)[-1] == "Added it." and not window.retry_buttons
         assert texts(window).count("Add a star") == 1
+    finally:
+        window.window.destroy()
+
+
+def test_the_saved_chat_shows_and_new_chat_clears_it(tmp_path):
+    from inkscape_mcp.chat_store import ChatStore
+
+    path = tmp_path / "drawing.svg"
+    SvgDocument.blank(200, 100).save(path)
+    store = ChatStore(path, tmp_path / "chats")
+    ChatSession(path, ScriptedClient([done("Hello.")]), Inkscape(), live=None, store=store).send("Hi")
+    window = ChatWindow(ChatSession(path, ScriptedClient([]), Inkscape(), live=None, store=store))
+    window.window.show_all()
+
+    try:
+        assert "Hi" in texts(window) and "Hello." in texts(window)
+
+        window.session.transcript.clear()
+        window.new_chat()
+
+        assert "Hello." not in texts(window) and not store.folder.exists()
     finally:
         window.window.destroy()

@@ -65,6 +65,7 @@ def test_page_and_api_need_the_token(chat):
 
     status, page = request(server, f"/?token={server.token}")
     assert status == 200 and server.token.encode() in page
+    assert b"{{" not in page and b'<svg xmlns="http://www.w3.org/2000/svg"' in page, "icons and logo are filled in"
 
 
 def test_conversation_edits_the_file_and_undo_reverts(chat):
@@ -77,6 +78,7 @@ def test_conversation_edits_the_file_and_undo_reverts(chat):
     assert reply["text"] == "Added a teal box."
     assert [step["tool"] for step in reply["steps"]] == ["add_elements"]
     assert reply["preview"], "a PNG preview comes back"
+    assert reply["can_undo"]
     assert SvgDocument.load(path).has("box")
 
     status, body = request(server, "/api/undo", {}, server.token)

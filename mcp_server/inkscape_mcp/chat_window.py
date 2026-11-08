@@ -41,7 +41,8 @@ except Exception:
     Gtk = None
 
 from .attachments import MAX_BYTES, Attachment
-from .chat import EXPECTED_ERRORS, ChatSession
+from .chat import EXPECTED_ERRORS, LOGO, ChatSession
+from .icons import svg
 from .claude import BACKENDS, EFFORTS, ClaudeError, Config
 from .usage import Limit
 
@@ -68,6 +69,37 @@ EFFORT_LABELS = {"low": "Low (fastest)", "medium": "Medium (default)", "high": "
                  "max": "Max (slowest)"}
 
 BACKEND_LABELS = {"api": "API key", "claude-code": "Claude Code (your subscription)"}
+
+
+def icon_button(icon: str, label: str | None = None, tooltip: str | None = None, flat: bool = False,
+                classes: tuple[str, ...] = ()):
+    """A button with a Lucide icon, drawn in the button's text colour, and an optional label."""
+    button = Gtk.Button(label=label, tooltip_text=tooltip)
+    for name in classes:
+        button.get_style_context().add_class(name)
+    if flat:
+        button.set_relief(Gtk.ReliefStyle.NONE)
+
+    color = button.get_style_context().get_color(Gtk.StateFlags.NORMAL)
+    hex_color = "#%02x%02x%02x" % tuple(round(part * 255) for part in (color.red, color.green, color.blue))
+    try:
+        loader = GdkPixbuf.PixbufLoader()
+        loader.write(svg(icon, hex_color, 32).encode("utf-8"))
+        loader.close()
+        pixbuf = loader.get_pixbuf()
+    except GLib.Error:
+        if not label:
+            button.set_label(tooltip.split(":")[0] if tooltip else icon)
+        return button
+
+    try:
+        image = Gtk.Image.new_from_surface(Gdk.cairo_surface_create_from_pixbuf(pixbuf, 2, None))
+    except TypeError:
+        image = Gtk.Image.new_from_pixbuf(pixbuf.scale_simple(16, 16, GdkPixbuf.InterpType.BILINEAR))
+    button.set_image(image)
+    button.set_always_show_image(True)
+
+    return button
 
 
 class SettingsDialog:
@@ -147,6 +179,12 @@ class UsagePanel:
 
         return False
 
+    def reset(self) -> None:
+        self.usage = None
+        for child in self.box.get_children():
+            child.destroy()
+        self.box.hide()
+
     def refresh(self) -> bool:
         if self.usage:
             self.render()
@@ -193,8 +231,8 @@ class PendingImages:
 
     def add(self, image: Attachment) -> None:
         self.images.append(image)
-        remove = Gtk.Button(label="×", relief=Gtk.ReliefStyle.NONE, tooltip_text=f"Remove {image.name}",
-                            valign=Gtk.Align.START)
+        remove = icon_button("x", tooltip=f"Remove {image.name}", flat=True)
+        remove.set_valign(Gtk.Align.START)
         chip = Gtk.Box(spacing=0)
         chip.pack_start(Gtk.Image.new_from_pixbuf(ChatWindow.thumbnail(image.path, THUMBNAIL_SIZE)), False, False, 0)
         chip.pack_start(remove, False, False, 0)
@@ -274,6 +312,10 @@ class ChatWindow:
         self.session = session
         self.window = Gtk.Window(title=f"Claude: {session.path.name}")
         self.window.set_default_size(420, 640)
+        try:
+            self.window.set_icon(GdkPixbuf.Pixbuf.new_from_file_at_size(str(LOGO), 128, 128))
+        except GLib.Error:
+            pass
         self.window.connect("destroy", lambda *_: Gtk.main_quit())
 
         css = Gtk.CssProvider()
@@ -283,13 +325,15 @@ class ChatWindow:
 
         self.badge = Gtk.Label(xalign=0)
         self.badge.get_style_context().add_class("badge")
-        settings_button = Gtk.Button(label="Settings")
-        settings_button.set_tooltip_text("Model, effort and API key")
-        settings_button.set_relief(Gtk.ReliefStyle.NONE)
+        settings_button = icon_button("settings", tooltip="Settings: connection, model, effort and API key", flat=True)
         settings_button.connect("clicked", lambda *_: self.open_settings())
+        self.new_button = icon_button("square-pen", tooltip="New chat: Claude forgets this drawing's conversation",
+                                      flat=True)
+        self.new_button.connect("clicked", lambda *_: self.new_chat())
         header = Gtk.Box(spacing=6)
         header.pack_start(self.badge, True, True, 0)
         header.pack_end(settings_button, False, False, 0)
+        header.pack_end(self.new_button, False, False, 0)
         self.usage = UsagePanel()
 
         self.messages = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
@@ -297,7 +341,8 @@ class ChatWindow:
         self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.scroller.add(self.messages)
 
-        self.prompt = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False)
+        self.prompt = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False, left_margin=10,
+                                   right_margin=10, top_margin=8, bottom_margin=8)
         self.prompt.set_size_request(-1, 70)
         self.prompt.connect("key-press-event", self.on_key)
         self.prompt.connect("paste-clipboard", self.on_paste)
@@ -307,13 +352,13 @@ class ChatWindow:
 
         self.status = Gtk.Label(xalign=0)
         self.spinner = Gtk.Spinner()
-        self.send_button = Gtk.Button(label="Send")
-        self.send_button.get_style_context().add_class("suggested-action")
+        self.send_button = icon_button("send", "Send", classes=("suggested-action",))
         self.send_button.connect("clicked", lambda *_: self.send())
-        self.undo_button = Gtk.Button(label="Undo")
+        self.undo_button = icon_button("undo-2", "Undo", tooltip="Undo Claude's last change to the drawing")
+        self.undo_button.set_no_show_all(True)
         self.undo_button.connect("clicked", lambda *_: self.undo())
-        self.image_button = Gtk.Button(label="Image…", tooltip_text="Attach images for Claude to see or place. "
-                                                                     "You can also paste or drop them here.")
+        self.image_button = icon_button("image-plus", tooltip="Attach images: Claude sees them as context. You can "
+                                                              "also paste or drop them here.")
         self.image_button.connect("clicked", lambda *_: self.choose_images())
 
         actions = Gtk.Box(spacing=6)
@@ -334,10 +379,7 @@ class ChatWindow:
 
         self.was_live = session.live_enabled
         self.retry_buttons: list = []
-        self.add_message("system", "Ask for a change to the drawing. Enter sends, Shift+Enter adds a line.")
-        for entry in session.transcript:
-            self.add_message(entry["role"], entry["text"], entry.get("steps"),
-                             retry=entry.get("retry") and entry is session.transcript[-1])
+        self.show_transcript()
         if session.backend == "claude-code":
             self.add_message("system", self.describe_settings())
         self.refresh_badge()
@@ -349,6 +391,35 @@ class ChatWindow:
         GLib.timeout_add_seconds(30, self.usage.refresh)
         if session.needs_key:
             GLib.idle_add(self.ask_for_key)
+
+    def show_transcript(self) -> None:
+        """The welcome line, then the drawing's saved chat, if any."""
+        self.add_message("system", "Ask for a change to the drawing. Enter sends, Shift+Enter adds a line.")
+        for entry in self.session.transcript:
+            images = [self.session.attachments.folder / name for name in entry.get("images") or []]
+            self.add_message(entry["role"], entry["text"], entry.get("steps"), selection=entry.get("selection"),
+                             images=[path for path in images if path.is_file()],
+                             retry=entry.get("retry") and entry is self.session.transcript[-1] and
+                             self.session.can_retry)
+
+    def new_chat(self) -> None:
+        if self.session.transcript:
+            dialog = Gtk.MessageDialog(transient_for=self.window, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                       buttons=Gtk.ButtonsType.OK_CANCEL, text="Start a new chat?")
+            dialog.format_secondary_text("Claude forgets this conversation and its attached images. The drawing "
+                                         "stays as it is.")
+            confirmed = dialog.run() == Gtk.ResponseType.OK
+            dialog.destroy()
+            if not confirmed:
+                return
+
+        self.session.clear()
+        for row in self.messages.get_children():
+            row.destroy()
+        self.retry_buttons.clear()
+        self.pending.take()
+        self.usage.reset()
+        self.show_transcript()
 
     @staticmethod
     def supported() -> bool:
@@ -505,7 +576,9 @@ class ChatWindow:
         self.status.set_text(status)
         self.send_button.set_sensitive(not busy)
         self.undo_button.set_sensitive(not busy)
+        self.undo_button.set_visible(self.session.can_undo)
         self.image_button.set_sensitive(not busy)
+        self.new_button.set_sensitive(not busy)
         if busy:
             for button in self.retry_buttons:
                 button.destroy()
@@ -553,8 +626,9 @@ class ChatWindow:
             bubble.pack_start(Gtk.Image.new_from_pixbuf(self.pixbuf(preview)), False, False, 0)
 
         if retry:
-            button = Gtk.Button(label="Retry", halign=Gtk.Align.START,
-                                tooltip_text="Send the message again. Changes Claude already made stay.")
+            button = icon_button("rotate-cw", "Retry", tooltip="Send the message again. Changes Claude already made "
+                                                               "stay.")
+            button.set_halign(Gtk.Align.START)
             button.connect("clicked", lambda *_: self.retry())
             self.retry_buttons.append(button)
             bubble.pack_start(button, False, False, 0)

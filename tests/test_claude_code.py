@@ -28,13 +28,17 @@ import json, os, subprocess, sys
 
 args = sys.argv[1:]
 prompt = sys.stdin.read()
+if "--resume" in args and os.environ.get("FAKE_CLAUDE_LOST"):
+    with open(os.environ["FAKE_CLAUDE_LOG"], "a") as log:
+        log.write(json.dumps({"args": args, "prompt": prompt, "lost": True}) + "\\n")
+    sys.exit("Error: No conversation found with session ID: " + args[args.index("--resume") + 1])
 content = None
 if "--input-format" in args:
     message = json.loads(prompt)["message"]
     content = [block["type"] for block in message["content"]]
     prompt = message["content"][-1]["text"]
 with open(os.environ["FAKE_CLAUDE_LOG"], "a") as log:
-    log.write(json.dumps({"args": args, "prompt": prompt, "content": content,
+    log.write(json.dumps({"args": args, "prompt": prompt, "content": content, "cwd": os.getcwd(),
                           "api_key": os.environ.get("ANTHROPIC_API_KEY")}) + "\\n")
 
 config = json.loads(next(a for a in args if a.startswith("--mcp-config=")).split("=", 1)[1])
@@ -236,3 +240,32 @@ def test_claude_code_gets_images_and_reports_context_and_limits(drawing, fake_cl
     session.send("Hello")
 
     assert "--input-format" not in runs()[1]["args"], "a message without images is sent as plain text"
+
+
+def test_claude_code_chat_comes_back_after_a_restart(drawing, fake_claude, tmp_path, monkeypatch):
+    from inkscape_mcp.chat_store import ChatStore
+
+    script_turn, runs = fake_claude
+    store = ChatStore(drawing, tmp_path / "chats")
+
+    def open_session():
+        return ChatSession(drawing, ClaudeClient(""), Inkscape(), live=None, backend="claude-code", store=store)
+
+    script_turn("Hello there.")
+    open_session().send("Hi")
+    script_turn("Still here.")
+    again = open_session()
+    again.send("Remember me?")
+
+    first, second = runs()
+    assert [entry["text"] for entry in again.transcript] == ["Hi", "Hello there.", "Remember me?", "Still here."]
+    assert second["args"][-2:] == ["--resume", "session-1"]
+    assert first["cwd"] == second["cwd"] == str(store.folder), "Claude Code finds its sessions by folder"
+
+    monkeypatch.setenv("FAKE_CLAUDE_LOST", "1")
+    script_turn("Fresh start.")
+    result = open_session().send("Are you there?")
+
+    lost, fresh = runs()[2:]
+    assert lost["lost"] and "--resume" not in fresh["args"]
+    assert result["text"] == "Fresh start."

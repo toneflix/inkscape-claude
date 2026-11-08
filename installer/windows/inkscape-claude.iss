@@ -21,6 +21,8 @@ OutputBaseFilename={#OutputName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=inkscape-claude.ico
+UninstallDisplayIcon={app}\inkscape-claude.ico
 UninstallDisplayName=Inkscape Claude
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -31,6 +33,7 @@ Type: filesandordirs; Name: "{userappdata}\inkscape\extensions\claude"
 [Files]
 Source: "{#Stage}\extension\claude\*"; DestDir: "{userappdata}\inkscape\extensions\claude"; Flags: ignoreversion recursesubdirs
 Source: "{#Stage}\bin\inkscape-mcp.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "inkscape-claude.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{userappdata}\inkscape\extensions\claude"

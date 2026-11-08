@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import secrets
 import sys
 import tempfile
@@ -23,9 +24,11 @@ from urllib.parse import parse_qs, urlparse
 
 from .agent import DrawingAgent, Step
 from .attachments import Attachment, Attachments
+from .chat_store import ChatStore
 from .claude import BACKENDS, DEFAULT_MODEL, EFFORTS, ClaudeClient, ClaudeError, Config
 from .claude_code import ClaudeCode, ClaudeCodeAgent
 from .cli import Inkscape, InkscapeError
+from .icons import svg
 from .live import LiveError, LiveInkscape
 from .operations import DocumentOperations
 from .shell import ShellInkscape, live_control
@@ -34,6 +37,7 @@ from .usage import Usage
 from .workspace import History
 
 PAGE = Path(__file__).with_name("chat.html")
+LOGO = Path(__file__).with_name("logo.svg")
 SELECTION_MARK = "data-claude-selected"
 READ_ONLY_TOOLS = {"get_outline", "get_pages", "get_element", "get_bounding_boxes", "render_preview"}
 LIVE_RELOAD_SECONDS = 1.5
@@ -47,14 +51,15 @@ class ChatSession:
 
     def __init__(self, path: Path, client: ClaudeClient, inkscape: Inkscape,
                  live: LiveInkscape | ShellInkscape | None, window: int | None = None, backend: str = "api",
-                 claude_path: str | None = None):
+                 claude_path: str | None = None, store: ChatStore | None = None):
         self.path = path
         self.live = live
         self.window = window
         self.claude_path = claude_path
+        self.store = store
         self.history_dir = tempfile.TemporaryDirectory(prefix="inkscape-claude-chat-")
         self.operations = DocumentOperations(inkscape, History(root=Path(self.history_dir.name)))
-        self.attachments = Attachments(Path(self.history_dir.name) / "attachments")
+        self.attachments = Attachments(store.attachments if store else Path(self.history_dir.name) / "attachments")
         self.backend = backend
         self.agent = self.make_agent(client, backend)
         self.transcript: list[dict] = []
@@ -62,6 +67,7 @@ class ChatSession:
         self.focus: list[str] = []
         self.failed: tuple[str, list[Attachment]] | None = None
         self.lock = threading.Lock()
+        self.restore()
 
     @classmethod
     def open(cls, args: argparse.Namespace) -> ChatSession:
@@ -90,7 +96,7 @@ class ChatSession:
                               "in a new window that it keeps in sync. Work in that one and close the other, so you "
                               "don't edit two copies.")
 
-        session = cls(document, client, inkscape, live, window, backend, settings["claude_path"])
+        session = cls(document, client, inkscape, live, window, backend, settings["claude_path"], ChatStore(document))
         if notice:
             print(notice, flush=True)
             session.transcript.append({"role": "system", "text": notice})
@@ -104,8 +110,12 @@ class ChatSession:
 
     def make_agent(self, client: ClaudeClient, backend: str) -> DrawingAgent | ClaudeCodeAgent:
         if backend == "claude-code":
+            workdir = None
+            if self.store:
+                workdir = self.store.folder
+                workdir.mkdir(parents=True, exist_ok=True)
             return ClaudeCodeAgent(client, self.path, Path(self.history_dir.name), self.claude_path,
-                                   attachments=self.attachments)
+                                   attachments=self.attachments, workdir=workdir)
 
         return DrawingAgent(client, self.operations, self.path, attachments=self.attachments)
 
@@ -131,6 +141,46 @@ class ChatSession:
         if backend in BACKENDS and backend != self.backend:
             self.backend = backend
             self.agent = self.make_agent(self.client, backend)
+            self.save()
+
+    def restore(self) -> None:
+        """Brings back this drawing's saved chat. What Claude remembers only carries over on the same backend."""
+        data = self.store.load() if self.store else {}
+        if not data:
+            return
+
+        self.transcript = [entry for entry in data.get("transcript") or [] if isinstance(entry, dict)]
+        self.notes = [str(note) for note in data.get("notes") or []]
+        if data.get("backend") == self.backend:
+            self.agent.restore(data.get("agent") or {})
+            self.agent.usage = Usage.from_dict(data.get("usage"))
+        elif self.transcript:
+            self.transcript.append({"role": "system", "text": "These messages went through another connection, so "
+                                                              "Claude does not remember them. Use New chat to start "
+                                                              "over, or switch back in Settings."})
+
+    def save(self) -> None:
+        if not self.store:
+            return
+
+        state = dict(self.agent.state())
+        if "messages" in state:
+            state["messages"] = ChatStore.without_images(state["messages"])
+        try:
+            self.store.save({"backend": self.backend, "transcript": self.transcript, "notes": self.notes,
+                             "agent": state, "usage": self.usage.to_dict()})
+        except OSError as exc:
+            print(f"Could not save the chat: {exc}", flush=True)
+
+    def clear(self) -> dict:
+        """Starts a new chat for this drawing: forgets the conversation and the attached images."""
+        with self.lock:
+            if self.store:
+                self.store.clear()
+            self.agent = self.make_agent(self.client, self.backend)
+            self.transcript, self.notes, self.focus, self.failed = [], [], [], None
+
+            return {"role": "system", "text": "Started a new chat.", "usage": self.usage.to_dict()}
 
     @property
     def owns_window(self) -> bool:
@@ -147,7 +197,11 @@ class ChatSession:
 
     def state(self) -> dict:
         return {"document": str(self.path), "live": self.live_enabled, "transcript": self.transcript,
-                "usage": self.usage.to_dict()}
+                "usage": self.usage.to_dict(), "can_retry": self.can_retry, "can_undo": self.can_undo}
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self.operations.history.snapshots(self.path))
 
     @property
     def can_retry(self) -> bool:
@@ -197,6 +251,7 @@ class ChatSession:
             finally:
                 self.listen(None)
                 self.sync_to_inkscape()
+                self.save()
 
             self.failed = None
             entry = {"role": "assistant", "text": result.reply, "steps": [asdict(step) for step in result.steps],
@@ -204,6 +259,7 @@ class ChatSession:
             self.transcript.append(entry)
 
             self.focus = selection
+            self.save()
 
             return {**entry, "preview": self.preview(), "usage": self.usage.to_dict()}
 
@@ -236,6 +292,7 @@ class ChatSession:
             self.notes.append("(I undid your last edit to the document.)")
             self.transcript.append({"role": "system", "text": "Undid the last change."})
             self.sync_to_inkscape()
+            self.save()
 
             return {"text": "Undid the last change.", "preview": self.preview()}
 
@@ -336,6 +393,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             if parse_qs(url.query).get("token", [""])[0] != self.token:
                 return self.reply(HTTPStatus.FORBIDDEN, {"error": "Open the link printed by inkscape-claude-chat."})
             page = PAGE.read_text(encoding="utf-8").replace("{{TOKEN}}", self.token)
+            page = page.replace("{{LOGO}}", base64.b64encode(LOGO.read_bytes()).decode("ascii"))
+            page = re.sub(r"\{\{icon:([a-z0-9-]+)\}\}", lambda match: svg(match.group(1)), page)
             return self.reply(HTTPStatus.OK, page.encode("utf-8"), "text/html; charset=utf-8")
 
         if url.path == "/api/progress" and self.authorized():
@@ -351,6 +410,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         routes = {"/api/message": self.send_message,
                   "/api/retry": self.retry_message,
+                  "/api/clear": lambda body: self.session.clear(),
                   "/api/undo": lambda body: self.session.undo()}
         route = routes.get(urlparse(self.path).path)
         if route is None:
@@ -359,9 +419,10 @@ class ChatHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("content-length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
-            self.reply(HTTPStatus.OK, route(body))
+            self.reply(HTTPStatus.OK, {**route(body), "can_undo": self.session.can_undo})
         except EXPECTED_ERRORS as exc:
-            self.reply(HTTPStatus.BAD_REQUEST, {"error": str(exc), "retry": self.session.can_retry})
+            self.reply(HTTPStatus.BAD_REQUEST, {"error": str(exc), "retry": self.session.can_retry,
+                                                "can_undo": self.session.can_undo})
 
     def send_message(self, body: dict) -> dict:
         images = [self.session.attachments.add_data(str(image.get("name") or "image"),
