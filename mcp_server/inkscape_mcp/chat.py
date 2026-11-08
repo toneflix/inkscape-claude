@@ -90,8 +90,9 @@ class ChatSession:
                       "Inkscape to see Claude's changes.")
         elif args.draft:
             notice = (f"Your drawing had not been saved, so the chat saved it as {document} and opened it in a new "
-                      "Inkscape window that it keeps in sync. Work in that window and close the untitled one; use "
-                      "File > Save As to keep it somewhere else.")
+                      "Inkscape window that it keeps in sync. Work in that window and close the untitled one. To keep it "
+                      "under another name, use File > Save As there, then open the chat again from that window: this "
+                      "chat stays with the Untitled file.")
         if live is not None and (isinstance(live, ShellInkscape) or not args.attach) and window is None:
             try:
                 window = live.open(document)

@@ -232,7 +232,8 @@ page after each answer, and remembers what you asked before ("now make those sta
 
 Start it from Inkscape with **Extensions > Claude > Open Claude Chat** (there is no dialog, the chat opens
 straight away; a drawing that was never saved is saved as `~/InkscapeClaude/Untitled <date>.svg` and opened in a
-window the chat keeps in sync), or from a terminal:
+window the chat keeps in sync; after File > Save As in that window, open the chat again from it), or from a
+terminal:
 
 ```bash
 inkscape-claude-chat drawing.svg               # opens the file in Inkscape and the chat window
