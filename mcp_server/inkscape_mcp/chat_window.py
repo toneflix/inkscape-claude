@@ -147,6 +147,12 @@ class UsagePanel:
 
         return False
 
+    def reset(self) -> None:
+        self.usage = None
+        for child in self.box.get_children():
+            child.destroy()
+        self.box.hide()
+
     def refresh(self) -> bool:
         if self.usage:
             self.render()
@@ -287,9 +293,13 @@ class ChatWindow:
         settings_button.set_tooltip_text("Model, effort and API key")
         settings_button.set_relief(Gtk.ReliefStyle.NONE)
         settings_button.connect("clicked", lambda *_: self.open_settings())
+        self.new_button = Gtk.Button(label="New chat", relief=Gtk.ReliefStyle.NONE,
+                                     tooltip_text="Start over: Claude forgets this drawing's conversation")
+        self.new_button.connect("clicked", lambda *_: self.new_chat())
         header = Gtk.Box(spacing=6)
         header.pack_start(self.badge, True, True, 0)
         header.pack_end(settings_button, False, False, 0)
+        header.pack_end(self.new_button, False, False, 0)
         self.usage = UsagePanel()
 
         self.messages = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
@@ -334,10 +344,7 @@ class ChatWindow:
 
         self.was_live = session.live_enabled
         self.retry_buttons: list = []
-        self.add_message("system", "Ask for a change to the drawing. Enter sends, Shift+Enter adds a line.")
-        for entry in session.transcript:
-            self.add_message(entry["role"], entry["text"], entry.get("steps"),
-                             retry=entry.get("retry") and entry is session.transcript[-1])
+        self.show_transcript()
         if session.backend == "claude-code":
             self.add_message("system", self.describe_settings())
         self.refresh_badge()
@@ -349,6 +356,35 @@ class ChatWindow:
         GLib.timeout_add_seconds(30, self.usage.refresh)
         if session.needs_key:
             GLib.idle_add(self.ask_for_key)
+
+    def show_transcript(self) -> None:
+        """The welcome line, then the drawing's saved chat, if any."""
+        self.add_message("system", "Ask for a change to the drawing. Enter sends, Shift+Enter adds a line.")
+        for entry in self.session.transcript:
+            images = [self.session.attachments.folder / name for name in entry.get("images") or []]
+            self.add_message(entry["role"], entry["text"], entry.get("steps"), selection=entry.get("selection"),
+                             images=[path for path in images if path.is_file()],
+                             retry=entry.get("retry") and entry is self.session.transcript[-1] and
+                             self.session.can_retry)
+
+    def new_chat(self) -> None:
+        if self.session.transcript:
+            dialog = Gtk.MessageDialog(transient_for=self.window, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                       buttons=Gtk.ButtonsType.OK_CANCEL, text="Start a new chat?")
+            dialog.format_secondary_text("Claude forgets this conversation and its attached images. The drawing "
+                                         "stays as it is.")
+            confirmed = dialog.run() == Gtk.ResponseType.OK
+            dialog.destroy()
+            if not confirmed:
+                return
+
+        self.session.clear()
+        for row in self.messages.get_children():
+            row.destroy()
+        self.retry_buttons.clear()
+        self.pending.take()
+        self.usage.reset()
+        self.show_transcript()
 
     @staticmethod
     def supported() -> bool:
@@ -506,6 +542,7 @@ class ChatWindow:
         self.send_button.set_sensitive(not busy)
         self.undo_button.set_sensitive(not busy)
         self.image_button.set_sensitive(not busy)
+        self.new_button.set_sensitive(not busy)
         if busy:
             for button in self.retry_buttons:
                 button.destroy()

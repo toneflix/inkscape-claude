@@ -256,6 +256,8 @@ inkscape-claude-chat drawing.svg --ui browser  # the same chat as a page in your
   limits, such as the 5-hour and weekly ones. With an API key it is the tightest per-minute rate limit.
 - When a message fails (for example Claude is overloaded or the connection drops), **Retry** under the error
   sends it again with its images. Changes Claude made before it failed stay.
+- Each drawing keeps its chat: reopen the chat for the same file and the conversation is there, and Claude
+  remembers it (saved under `chats` next to the config file). **New chat** starts over.
 - **Undo** reverts Claude's last edit, and Claude is told about it. **Enter** sends, **Shift+Enter** adds a line.
 - If the chat cannot start, Inkscape shows why. Its output goes to `chat.log` next to the config file
   (`~/.config/inkscape-claude/chat.log`, Windows: `%APPDATA%\inkscape-claude\chat.log`).

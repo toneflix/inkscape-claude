@@ -247,6 +247,12 @@ class DrawingAgent:
         self.system = system
         self.messages: list[dict] = []
 
+    def state(self) -> dict:
+        return {"messages": self.messages}
+
+    def restore(self, state: dict) -> None:
+        self.messages = list(state.get("messages") or [])
+
     def run(self, prompt: str, context: list[dict] | None = None) -> TurnResult:
         self.messages.append({"role": "user", "content": [*(context or []), {"type": "text", "text": prompt}]})
         steps: list[Step] = []

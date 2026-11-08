@@ -18,6 +18,7 @@ from .usage import Limit, Usage, context_window
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 TOOL_PREFIX = f"mcp__{SERVER_NAME}__"
+LOST_SESSION = ("No conversation found", "Failed to resume session")
 
 
 class ClaudeCode:
@@ -54,10 +55,12 @@ class ClaudeCodeAgent:
 
     def __init__(self, settings: ClaudeClient, path: Path, history: Path, binary: str | None = None,
                  on_step: Callable[[Step], None] | None = None, on_text: Callable[[str], None] | None = None,
-                 attachments: Attachments | None = None, on_usage: Callable[[Usage], None] | None = None):
+                 attachments: Attachments | None = None, on_usage: Callable[[Usage], None] | None = None,
+                 workdir: Path | None = None):
         self.settings = settings
         self.path = path
         self.history = history
+        self.workdir = workdir or history
         self.binary = binary
         self.on_step = on_step
         self.on_text = on_text
@@ -105,7 +108,24 @@ class ClaudeCodeAgent:
         return json.dumps({"type": "user", "message": {"role": "user", "content": content},
                            "parent_tool_use_id": None, "session_id": ""}) + "\n"
 
+    def state(self) -> dict:
+        return {"session_id": self.session_id}
+
+    def restore(self, state: dict) -> None:
+        self.session_id = state.get("session_id") or None
+
     def run(self, prompt: str, context: list[dict] | None = None) -> TurnResult:
+        """Runs one turn. A saved session Claude Code no longer has is dropped, and the turn starts a new one."""
+        try:
+            return self.run_once(prompt, context)
+        except ClaudeError as exc:
+            if not self.session_id or not any(text in str(exc) for text in LOST_SESSION):
+                raise
+            self.session_id = None
+
+            return self.run_once(prompt, context)
+
+    def run_once(self, prompt: str, context: list[dict] | None = None) -> TurnResult:
         binary = ClaudeCode.find(self.binary)
         if binary is None:
             raise ClaudeError("Could not find Claude Code (the `claude` command). Install it from "
@@ -116,7 +136,7 @@ class ClaudeCodeAgent:
         try:
             process = subprocess.Popen(self.command(binary, bool(context)), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                                       cwd=self.history, env=self.environment(), creationflags=flags)
+                                       cwd=self.workdir, env=self.environment(), creationflags=flags)
         except OSError as exc:
             raise ClaudeError(f"Could not start Claude Code ({binary}): {exc}") from exc
 

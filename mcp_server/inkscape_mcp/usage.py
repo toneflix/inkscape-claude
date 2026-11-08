@@ -158,5 +158,13 @@ class Usage:
         return (f"Context: {short_tokens(self.context_tokens)} of {short_tokens(self.context_window)} "
                 f"({round(self.context_share * 100)}%)")
 
+    @classmethod
+    def from_dict(cls, data: dict | None) -> Usage:
+        data = data or {}
+        limits = [Limit(**{key: limit.get(key) for key in ("name", "used", "resets_at", "status")})
+                  for limit in data.get("limits") or [] if isinstance(limit, dict) and limit.get("name")]
+
+        return cls(int(data.get("context_tokens") or 0), data.get("context_window"), limits)
+
     def to_dict(self) -> dict:
         return {**asdict(self), "context_share": self.context_share, "context_text": self.context_text()}
